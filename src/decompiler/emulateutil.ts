@@ -116,11 +116,10 @@ export abstract class Emulate {
 
   /** Do a single pcode op step */
   executeCurrentOp(): void {
-    if (this.emu_halted) {
-      throw new LowlevelError("Emulator is halted");
-    }
     if (this.currentBehave === null) {
-      throw new LowlevelError("No current behavior set");
+      // Presumably a NO-OP
+      this.fallthruOp();
+      return;
     }
 
     const opc: OpCode = this.currentBehave.getOpcode();
