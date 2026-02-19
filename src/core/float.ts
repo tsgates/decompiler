@@ -748,7 +748,8 @@ export class FloatFormat {
       s = s.replace(/e([+-])(\d)$/, 'e$1' + '0$2');
 
       if (prec === this.decimalMaxPrecision) {
-        return s;
+        res = s;
+        break;
       }
 
       res = s;
@@ -769,12 +770,33 @@ export class FloatFormat {
         break;
       }
     }
-    // Strip trailing zeros after decimal point (matching C++ %g behavior)
-    if (!forcesci && res.includes('.') && !res.includes('e') && !res.includes('E')) {
-      res = res.replace(/(\.\d*?)0+$/, '$1');
-      // If decimal point is now the last char, keep at least one digit
-      if (res.endsWith('.'))
-        res += '0';
+    // C++ defaultfloat uses scientific notation when exponent < -4 or exponent >= precision
+    // JavaScript toPrecision uses it when exponent < -6 or exponent >= precision
+    // Convert to scientific notation for the gap: -6 <= exponent < -4
+    if (!forcesci && !res.includes('e') && !res.includes('E')) {
+      const absVal = Math.abs(host);
+      if (absVal !== 0 && absVal < 1e-4) {
+        // Count significant digits in current representation
+        const match = res.match(/^-?0*\.?0*/);
+        const leadingNonSig = match ? match[0].length : 0;
+        const sigPart = res.slice(leadingNonSig).replace(/\.$/, '');
+        const sigDigits = sigPart.length;
+        res = host.toExponential(Math.max(sigDigits - 1, 0));
+        res = res.replace(/e([+-])(\d)$/, 'e$10$2');
+      }
+    }
+    // Strip trailing zeros (matching C++ defaultfloat / %g behavior)
+    // Only strip when not using forced scientific notation
+    if (!forcesci && res.includes('.')) {
+      if (res.includes('e') || res.includes('E')) {
+        // Scientific notation: strip trailing zeros before 'e'
+        res = res.replace(/\.?0+(e)/i, '$1');
+      } else {
+        // Fixed notation: strip trailing zeros after decimal
+        res = res.replace(/(\.\d*?)0+$/, '$1');
+        if (res.endsWith('.'))
+          res += '0';
+      }
     }
     return res;
   }
