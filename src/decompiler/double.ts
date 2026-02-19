@@ -3355,7 +3355,7 @@ CopyForceForm.prototype.verify = function (
       // Special form has additional requirements
       if (h.loneDescend() === null) continue;
       if (l.loneDescend() === null) continue;
-      if (w.getAddr() !== this.addrOut) {
+      if (!w.getAddr().equals(this.addrOut)) {
         // Unless there are additional COPYs from the same basic block
         if (!h.isWritten() || !l.isWritten()) continue;
         const otherLo: PcodeOp = l.getDef()!;

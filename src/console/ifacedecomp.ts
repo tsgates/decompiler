@@ -412,7 +412,7 @@ export class IfaceDecompData extends IfaceData {
         vn = iter.next();
         if (vn.isFree()) continue;
         if (vn.isWritten()) {
-          if (pc !== null && !pc.isInvalid() && vn.getDef().getAddr() === pc) break;
+          if (pc !== null && !pc.isInvalid() && vn.getDef().getAddr().equals(pc)) break;
           if (uq !== (~0 >>> 0) && vn.getDef().getTime() === uq) break;
         }
       }
@@ -2873,7 +2873,7 @@ export class IfcPrintInputs extends IfaceDecompCommand {
       const tmpvn: Varnode = vnlist[proc];
       proc += 1;
       if (tmpvn.isInput()) {
-        if (tmpvn.getSize() !== vn.getSize() || tmpvn.getAddr() !== vn.getAddr()) {
+        if (tmpvn.getSize() !== vn.getSize() || !tmpvn.getAddr().equals(vn.getAddr())) {
           res = 1;
           break;
         }

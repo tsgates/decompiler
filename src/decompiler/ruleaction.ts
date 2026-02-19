@@ -4198,7 +4198,7 @@ export class RulePropagateCopy extends Rule {
         if (invn.isConstant()) continue;
         if (vn.isAddrForce()) continue;
         if (invn.isAddrTied() && op.getOut()!.isAddrTied() &&
-            (op.getOut()!.getAddr() !== invn.getAddr()))
+            (!op.getOut()!.getAddr().equals(invn.getAddr())))
           continue;
       }
       data.opSetInput(op, invn, i);
