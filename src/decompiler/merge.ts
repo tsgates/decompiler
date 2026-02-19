@@ -8,7 +8,7 @@
 import { Address } from '../core/address.js';
 import { OpCode } from '../core/opcodes.js';
 import { Varnode } from './varnode.js';
-import { PcodeOp } from './op.js';
+import { PcodeOp, PieceNode } from './op.js';
 import { HighVariable, VariableGroup, VariablePiece, HighIntersectTest } from './variable.js';
 import { Cover, PcodeOpSet } from './cover.js';
 import { PcodeOpNode } from './expression.js';
@@ -29,7 +29,7 @@ type SymbolEntry = any;
 type AddrSpace = any;
 type LoadGuard = any;
 type ResolvedUnion = any;
-type PieceNode = any;
+// PieceNode imported from op.ts
 type VarnodeLocSet = any;
 
 // ---------------------------------------------------------------------------
@@ -1085,10 +1085,7 @@ export class Merge {
       baseOffset = entry.getOffset();
     }
 
-    // PieceNode.gatherPieces is a static method on PieceNode (from op.ts)
-    const PieceNodeClass = (PcodeOp as any).PieceNode || (vn.getDef() as any).constructor.PieceNode;
-    // Use dynamic import pattern since PieceNode is exported from op.ts
-    (PieceNodeClass ?? { gatherPieces: () => {} }).gatherPieces(pieces, vn, vn.getDef()!, baseOffset, baseOffset);
+    PieceNode.gatherPieces(pieces, vn, vn.getDef()!, baseOffset, baseOffset);
     let throwOut = false;
     for (let i = 0; i < pieces.length; ++i) {
       const nodeVn: Varnode = pieces[i].getVarnode();
