@@ -57,6 +57,9 @@ export function sign_extend(val: bigint, sizein: number, sizeout: number): bigin
   // Convert to signed 64-bit
   let sval = BigInt.asIntN(64, val);
   sval = sval << BigInt((8 - sizein) * 8);
+  // Re-interpret as signed 64-bit after shift (BigInt is arbitrary precision,
+  // so the left shift doesn't wrap like C++ int64_t does)
+  sval = BigInt.asIntN(64, sval);
   // Arithmetic right shift back
   let res = sval >> BigInt((sizeout - sizein) * 8);
   // Logical right shift by remaining amount (use BigInt.asUintN to convert to unsigned first)
