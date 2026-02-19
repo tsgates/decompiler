@@ -1384,7 +1384,8 @@ class JumpBasic extends JumpModel {
   }
 
   getTableSize(): number {
-    return Number(this.jrange!.getSize());
+    if (this.jrange === null) return 0;
+    return Number(this.jrange.getSize());
   }
 
   /**
@@ -2921,8 +2922,16 @@ export class JumpTable {
 
     for (let i = 0; i < this.addresstable.length; ++i) {
       const addr = this.addresstable[i];
-      const op = (flow as any).target(addr);
-      const tmpbl = (op as any).getParent();
+      let op: any;
+      try {
+        op = (flow as any).target(addr);
+      } catch (e) {
+        throw new LowlevelError("Jumptable destination not found");
+      }
+      if (op === null || op === undefined) {
+        throw new LowlevelError("Jumptable destination not found");
+      }
+      const tmpbl = op.getParent();
       let pos: number;
       for (pos = 0; pos < (parent as any).sizeOut(); ++pos)
         if ((parent as any).getOut(pos) === tmpbl) break;
@@ -2930,6 +2939,8 @@ export class JumpTable {
         throw new LowlevelError("Jumptable destination not linked");
       this.block2addr.push(new IndexPair(pos, i));
     }
+    if (this.block2addr.length === 0)
+      throw new LowlevelError("No entries in jumptable address-to-block map");
     this.lastBlock = this.block2addr[this.block2addr.length - 1].blockPosition;
     this.block2addr.sort((a, b) => {
       if (a.blockPosition !== b.blockPosition) return a.blockPosition - b.blockPosition;

@@ -2059,7 +2059,7 @@ export class Funcdata {
     mode.value = this.stageJumpTable(partial, trialjt, op, flow);
     if (mode.value !== JumpTableRecoveryMode.success)
       return null;
-    const newjt = new JumpTable(trialjt); // Make the jumptable permanent (copy constructor)
+    const newjt = JumpTable.copyFrom(trialjt); // Make the jumptable permanent (copy)
     this.jumpvec.push(newjt);
     newjt.setIndirectOp(op);
     return newjt;
