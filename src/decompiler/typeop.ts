@@ -69,6 +69,7 @@ import { Datatype, type_metatype } from './type.js';
 import type { Writer } from '../util/writer.js';
 import { Varnode } from './varnode.js';
 import { AddrSpace, spacetype } from '../core/space.js';
+import { FuncCallSpecs } from './fspec.js';
 
 // ---------------------------------------------------------------------------
 // Forward type declarations for not-yet-written modules
@@ -773,9 +774,7 @@ export class TypeOpCall extends TypeOp {
     const vn = op.getIn(0);
     if (slot === 0 || vn.getSpace().getType() !== spacetype.IPTR_FSPEC)
       return super.getInputLocal(op, slot);
-    const fc = (vn.getSpace() as any).constructor.getFspecFromConst
-      ? (vn.getSpace() as any).constructor.getFspecFromConst(vn.getAddr())
-      : null;
+    const fc = FuncCallSpecs.getFspecFromConst(vn.getAddr());
     if (fc === null) return super.getInputLocal(op, slot);
     const param = fc.getParam(slot - 1);
     if (param !== null) {
@@ -796,9 +795,7 @@ export class TypeOpCall extends TypeOp {
     const vn = op.getIn(0);
     if (vn.getSpace().getType() !== spacetype.IPTR_FSPEC)
       return super.getOutputLocal(op);
-    const fc = (vn.getSpace() as any).constructor.getFspecFromConst
-      ? (vn.getSpace() as any).constructor.getFspecFromConst(vn.getAddr())
-      : null;
+    const fc = FuncCallSpecs.getFspecFromConst(vn.getAddr());
     if (fc === null) return super.getOutputLocal(op);
     if (!fc.isOutputLocked()) return super.getOutputLocal(op);
     const ct = fc.getOutputType();
