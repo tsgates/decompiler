@@ -3079,9 +3079,9 @@ export class PrintC extends PrintLanguage {
     for (let i = 0; i < bl.getNumCaseBlocks(); ++i) {
       this.emitSwitchCase(i, bl);
       const id: number = this.emit.startIndent();
-      if (bl.getGotoType(i) !== 0) {
+      if (bl.getCaseGotoType(i) !== 0) {
         this.emit.tagLine();
-        this.emitGotoStatement(bl.getBlock(0), bl.getCaseBlock(i), bl.getGotoType(i));
+        this.emitGotoStatement(bl.getBlock(0), bl.getCaseBlock(i), bl.getCaseGotoType(i));
       } else {
         bl2 = bl.getCaseBlock(i);
         const id2: number = this.emit.beginBlock(bl2);
