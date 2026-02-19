@@ -3135,13 +3135,13 @@ export class ScopeInternal extends Scope {
       s = "param_" + index.val.toString();
     } else if ((flags & Varnode_addrtied) !== 0) {
       if (ct !== null) { const sw = new StringWriter(); ct.printNameBase(sw); s = sw.toString(); }
-      let spacename = addr.getSpace().getName();
+      const spc = addr.getSpace();
+      let spacename = spc.getName();
       spacename = spacename.charAt(0).toUpperCase() + spacename.slice(1);
       s += spacename;
-      const addrSize = addr.getAddrSize ? addr.getAddrSize() : 4;
-      const off = addr.getOffset();
+      const addrSize = spc.getAddrSize();
+      const off = AddrSpace.byteToAddress(addr.getOffset(), spc.getWordSize());
       const hexOff = (typeof off === 'bigint' ? off : BigInt(off)).toString(16).padStart(2 * addrSize, '0');
-      console.error(`[DBG] name="${s}${hexOff}" spacename="${spacename}" off=${off} typeof=${typeof off} addrSize=${addrSize}`);
       s += hexOff;
     } else if ((flags & Varnode_indirect_creation) !== 0) {
       let regname = "";
