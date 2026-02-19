@@ -17,6 +17,12 @@ if (process.env.DEBUG_READONLY) {
 if (process.env.DEBUG_SPACEBASE) {
   (globalThis as any).__DEBUG_SPACEBASE__ = true;
 }
+if (process.env.DEBUG_SIGNCONST) {
+  (globalThis as any).__DEBUG_SIGNCONST__ = true;
+}
+if (process.env.DEBUG_JUMPTABLE) {
+  (globalThis as any).__DEBUG_JUMPTABLE__ = true;
+}
 startDecompilerLibrary('/opt/ghidra');
 const w = new ConsoleWriter();
 const basedir = path.join(__dirname_local, '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests');
