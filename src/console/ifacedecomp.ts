@@ -2564,7 +2564,7 @@ export class IfcProtooverride extends IfaceDecompCommand {
     let i: number;
     const numCalls = this.dcp.fd.numCalls();
     for (i = 0; i < numCalls; ++i) {
-      if (this.dcp.fd.getCallSpecs_byIndex(i).getOp().getAddr() === callpoint) break;
+      if (this.dcp.fd.getCallSpecs_byIndex(i).getOp().getAddr().equals(callpoint)) break;
     }
     if (i === numCalls) {
       throw new IfaceExecutionError('No call is made at this address');
