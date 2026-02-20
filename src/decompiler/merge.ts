@@ -1270,7 +1270,7 @@ export class Merge {
         continue;
       }
       const type: number = spc.getType();
-      if (type !== 0 /* IPTR_PROCESSOR */ && type !== 5 /* IPTR_SPACEBASE */) {
+      if (type !== 1 /* IPTR_PROCESSOR */ && type !== 2 /* IPTR_SPACEBASE */) {
         startiter = this.data.endLoc(spc);
         continue;
       }

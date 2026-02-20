@@ -584,11 +584,15 @@ export class AddrSpace {
    */
   read(s: string, sizeRef: { val: int4 }): uintb {
     // Simplified read: parse hex offset
-    const parsed = parseInt(s, 16);
-    if (isNaN(parsed)) {
+    // Use BigInt directly to avoid precision loss with parseInt for large 64-bit values
+    let parsed: bigint;
+    try {
+      const hexStr = s.startsWith('0x') || s.startsWith('0X') ? s : '0x' + s;
+      parsed = BigInt(hexStr);
+    } catch {
       throw new LowlevelError('Unable to parse address: ' + s);
     }
-    const offset = AddrSpace.addressToByte(BigInt(parsed), this.wordsize);
+    const offset = AddrSpace.addressToByte(parsed, this.wordsize);
     sizeRef.val = this.manage?.getDefaultSize?.() ?? this.addressSize;
     return offset;
   }

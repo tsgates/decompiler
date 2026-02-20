@@ -1050,7 +1050,7 @@ export class PrintC extends PrintLanguage {
     if (this.castStrategy!.isSubpieceCast(
       op.getOut().getHighTypeDefFacing(),
       op.getIn(0).getHighTypeReadFacing(op),
-      op.getIn(1).getOffset()))
+      Number(op.getIn(1).getOffset())))
       this.opTypeCast(op);
     else
       this.opFunc(op);

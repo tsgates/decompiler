@@ -21,6 +21,7 @@ const CPUI_NEW = OpCode.CPUI_NEW;
 const CPUI_INT_ADD = OpCode.CPUI_INT_ADD;
 const CPUI_SEGMENTOP = OpCode.CPUI_SEGMENTOP;
 const CPUI_RETURN = OpCode.CPUI_RETURN;
+const CPUI_FLOAT_FLOAT2FLOAT = OpCode.CPUI_FLOAT_FLOAT2FLOAT;
 import { Varnode, VarnodeBank } from "../decompiler/varnode.js";
 import { PcodeOp } from "../decompiler/op.js";
 import { PreferSplitManager } from "../decompiler/prefersplit.js";
@@ -1481,8 +1482,33 @@ export class Heritage {
   private splitJoinLevel(lastcombo: Varnode[], nextlev: Varnode[], joinrec: JoinRecord): void { /* TODO */ }
   private splitJoinRead(vn: Varnode, joinrec: JoinRecord): void { /* TODO */ }
   private splitJoinWrite(vn: Varnode, joinrec: JoinRecord): void { /* TODO */ }
-  private floatExtensionRead(vn: Varnode, joinrec: JoinRecord): void { /* TODO */ }
-  private floatExtensionWrite(vn: Varnode, joinrec: JoinRecord): void { /* TODO */ }
+  private floatExtensionRead(vn: Varnode, joinrec: JoinRecord): void {
+    const op: PcodeOp = vn.loneDescend()!; // vn isFree, so loneDescend must be non-null
+    const trunc: PcodeOp = this.fd.newOp(1, op.getAddr());
+    const vdata = joinrec.getPiece(0); // Float extensions have exactly 1 piece
+    const bigvn: Varnode = this.fd.newVarnode(vdata.size, vdata.space, vdata.offset);
+    this.fd.opSetOpcode(trunc, CPUI_FLOAT_FLOAT2FLOAT);
+    this.fd.opSetOutput(trunc, vn);
+    this.fd.opSetInput(trunc, bigvn, 0);
+    this.fd.opInsertBefore(trunc, op);
+  }
+  private floatExtensionWrite(vn: Varnode, joinrec: JoinRecord): void {
+    const op: PcodeOp | null = vn.getDef();
+    const bb = this.fd.getBasicBlocks().getBlock(0);
+    let ext: PcodeOp;
+    if (vn.isInput())
+      ext = this.fd.newOp(1, bb.getStart());
+    else
+      ext = this.fd.newOp(1, op!.getAddr());
+    const vdata = joinrec.getPiece(0); // Float extensions have exactly 1 piece
+    this.fd.opSetOpcode(ext, CPUI_FLOAT_FLOAT2FLOAT);
+    this.fd.newVarnodeOut(vdata.size, vdata.getAddr(), ext);
+    this.fd.opSetInput(ext, vn, 0);
+    if (op === null)
+      this.fd.opInsertBegin(ext, bb);
+    else
+      this.fd.opInsertAfter(ext, op);
+  }
   /**
    * Process any Varnodes in the join address space.
    *
