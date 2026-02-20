@@ -2230,11 +2230,11 @@ export class TypeOpPtrsub extends TypeOp {
   getOutputToken(op: PcodeOp, castStrategy: CastStrategy): Datatype | null {
     const ptype: any = op.getIn(0).getHighTypeReadFacing(op);
     if (ptype.getMetatype() === type_metatype.TYPE_PTR) {
-      const offset = AddrSpace.addressToByte(op.getIn(1).getOffset(), ptype.getWordSize());
+      const offRef = { val: AddrSpace.addressToByte(op.getIn(1).getOffset(), ptype.getWordSize()) };
       const unusedParent = { val: null as any };
       const unusedOffset = { val: 0n };
-      const rettype = ptype.downChain({ val: offset }, unusedParent, unusedOffset, false, this.tlst);
-      if (offset === 0n && rettype !== null)
+      const rettype = ptype.downChain(offRef, unusedParent, unusedOffset, false, this.tlst);
+      if (offRef.val === 0n && rettype !== null)
         return rettype;
       const base = this.tlst.getBase(1, type_metatype.TYPE_UNKNOWN);
       return this.tlst.getTypePointer(op.getOut().getSize(), base, ptype.getWordSize());

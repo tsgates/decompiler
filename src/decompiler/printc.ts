@@ -1036,9 +1036,9 @@ export class PrintC extends PrintLanguage {
           this.pushPartialSymbol(sym, Number(byteOff), sz, op.getOut(), op, slot, true);
           return;
         }
-        const offResult = { value: 0n };
+        const offResult = { val: 0n };
         const field: TypeField = ct.findTruncation(byteOff, op.getOut().getSize(), op, 1, offResult);
-        if (field !== null && field !== undefined && offResult.value === 0n) {
+        if (field !== null && field !== undefined && offResult.val === 0n) {
           this.pushOp(PrintC.object_member, op);
           this.pushVn(vn, op, this.mods);
           this.pushAtom(new Atom(field.name, tagtype.fieldtoken, syntax_highlight.no_color, ct, field.ident ?? 0, op));
@@ -1126,7 +1126,7 @@ export class PrintC extends PrintLanguage {
         fieldtype = fld.type;
       } else {
         // TYPE_STRUCT
-        const newoffResult = { value: 0n };
+        const newoffResult = { val: 0n };
         const fld: TypeField = ct.findTruncation(suboff, 0, op, 0, newoffResult);
         if (fld === null || fld === undefined) {
           if (ct.getSize() <= Number(suboff) || Number(suboff) < 0) {
@@ -1806,10 +1806,10 @@ export class PrintC extends PrintLanguage {
           if (outtype === ct)
             break;
         }
-        const newoffResult = { value: 0 };
+        const newoffResult = { val: 0n };
         const field: TypeField = ct.findTruncation(BigInt(off), sz, op, slot, newoffResult);
         if (field !== null && field !== undefined) {
-          off = Number(newoffResult.value);
+          off = Number(newoffResult.val);
           const entry: PartialSymbolEntry = {
             token: PrintC.object_member,
             field: field,
@@ -1823,16 +1823,16 @@ export class PrintC extends PrintLanguage {
           succeeded = true;
         }
       } else if (ct.getMetatype() === type_metatype.TYPE_ARRAY) {
-        const offOut = { value: 0 };
-        const elOut = { value: 0 };
+        const offOut = { val: 0 };
+        const elOut = { val: 0 };
         const arrayof: Datatype = ct.getSubEntry(off, sz, offOut, elOut);
         if (arrayof !== null && arrayof !== undefined) {
-          off = offOut.value;
+          off = offOut.val;
           const entry: PartialSymbolEntry = {
             token: PrintC.subscript,
             field: null,
             parent: ct,
-            offset: BigInt(elOut.value),
+            offset: BigInt(elOut.val),
             size: 0,
             hilite: syntax_highlight.const_color,
           };
@@ -1841,10 +1841,10 @@ export class PrintC extends PrintLanguage {
           succeeded = true;
         }
       } else if (ct.getMetatype() === type_metatype.TYPE_UNION) {
-        const newoffResult = { value: 0 };
-        const field: TypeField = ct.findTruncation(BigInt(off), sz, op, slot, newoffResult);
+        const newoffResult2 = { val: 0n };
+        const field: TypeField = ct.findTruncation(BigInt(off), sz, op, slot, newoffResult2);
         if (field !== null && field !== undefined) {
-          off = Number(newoffResult.value);
+          off = Number(newoffResult2.val);
           const entry: PartialSymbolEntry = {
             token: PrintC.object_member,
             field: field,
@@ -2033,7 +2033,7 @@ export class PrintC extends PrintLanguage {
     let point: Address = new Address();
     if (op !== null && op !== undefined)
       point = op.getAddr();
-    const fullEncodingOut = { value: fullEncoding };
+    const fullEncodingOut = { val: fullEncoding };
     const stringaddr: Address = this.glb.resolveConstant(spc, val, ct.getSize(), point, fullEncodingOut);
     if (stringaddr.isInvalid()) return false;
     if (!this.glb.symboltab.getGlobalScope().isReadOnly(stringaddr, 1, new Address()))
@@ -2074,17 +2074,15 @@ export class PrintC extends PrintLanguage {
     if (manager === null || manager === undefined) return false;
 
     // Retrieve UTF8 version of string
-    let isTrunc = false;
-    const truncOut = { value: isTrunc };
-    const buffer: Uint8Array = manager.getStringData(addr, charType, truncOut);
-    isTrunc = truncOut.value;
-    if (!buffer || buffer.length === 0)
+    const result = manager.getStringData(addr, charType);
+    if (!result.byteData || result.byteData.length === 0)
       return false;
+    const buffer = new Uint8Array(result.byteData);
     if (this.doEmitWideCharPrefix() && charType.getSize() > 1 && !charType.isOpaqueString())
       s.write('L');
     s.write('"');
     this.escapeCharacterData(s, buffer, buffer.length, 1, this.glb.translate?.isBigEndian() ?? false);
-    if (isTrunc)
+    if (result.isTruncated)
       s.write('..." /* TRUNCATED STRING LITERAL */');
     else
       s.write('"');

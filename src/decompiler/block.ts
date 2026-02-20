@@ -1156,8 +1156,32 @@ export class BlockBasicClass extends FlowBlock {
     for (let i = idx + 1; i < this.op.length; i++) {
       (this.op[i] as any).setBasicIter(i);
     }
-    // Simplified ordering: assign sequential order
-    // Full re-ordering handled by setOrder()
+
+    // Assign ordering index, matching C++ BlockBasic::insert logic
+    let ordbefore: number;
+    let ordafter: number;
+
+    if (idx === 0) {
+      ordbefore = 2;  // Minimum possible order value
+    } else {
+      ordbefore = (this.op[idx - 1] as any).getSeqNum().getOrder();
+    }
+
+    if (idx + 1 >= this.op.length) {
+      // Inserting at the end
+      ordafter = (ordbefore + 0x1000000) >>> 0;
+      if (ordafter <= ordbefore)
+        ordafter = 0xFFFFFFFF;
+    } else {
+      ordafter = (this.op[idx + 1] as any).getSeqNum().getOrder();
+    }
+
+    if ((ordafter - ordbefore) <= 1) {
+      this.setOrder();  // No room, reassign all orders
+    } else {
+      (inst as any).setOrder(Math.floor(ordafter / 2) + Math.floor(ordbefore / 2));
+    }
+
     if ((inst as any).isBranch()) {
       if ((inst as any).code() === OpCode.CPUI_BRANCHIND) {
         this.setFlag(block_flags.f_switch_out);

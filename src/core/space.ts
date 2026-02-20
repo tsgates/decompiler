@@ -583,17 +583,57 @@ export class AddrSpace {
    * @returns the parsed offset
    */
   read(s: string, sizeRef: { val: int4 }): uintb {
-    // Simplified read: parse hex offset
-    // Use BigInt directly to avoid precision loss with parseInt for large 64-bit values
+    // Parse address string, handling register names, hex offsets, and optional :size +offset suffixes.
+    // Matches C++ AddrSpace::read: first tries register name lookup, then falls back to hex parsing.
+    let numPart: string = s;
+    let explicitSize: number = -1;
+    let extraOffset: bigint = 0n;
+
+    // Handle :size and +offset suffixes (e.g. "0x1000:4" or "EAX+2")
+    const colonIdx = s.indexOf(':');
+    const plusIdx = s.indexOf('+');
+    if (colonIdx >= 0 || plusIdx >= 0) {
+      const appendIdx = (colonIdx >= 0 && plusIdx >= 0)
+        ? Math.min(colonIdx, plusIdx)
+        : (colonIdx >= 0 ? colonIdx : plusIdx);
+      numPart = s.substring(0, appendIdx);
+      const suffix = s.substring(appendIdx);
+      const colonMatch = suffix.match(/^:(\d+)/);
+      if (colonMatch) {
+        explicitSize = parseInt(colonMatch[1], 10);
+      }
+      const plusMatch = suffix.match(/\+(\d+)/);
+      if (plusMatch) {
+        extraOffset = BigInt(plusMatch[1]);
+      }
+    }
+
+    // First try to resolve as a register name (like C++ trans->getRegister(s))
+    const trans: any = this.manage;
+    if (trans !== null && typeof trans.getRegister === 'function') {
+      try {
+        const point = trans.getRegister(numPart);
+        if (point !== null && point !== undefined) {
+          const offset: uintb = point.offset + extraOffset;
+          sizeRef.val = (explicitSize >= 0) ? explicitSize : point.size;
+          return offset;
+        }
+      } catch {
+        // Not a register name, fall through to hex parsing
+      }
+    }
+
+    // Fall back to hex parsing
     let parsed: bigint;
     try {
-      const hexStr = s.startsWith('0x') || s.startsWith('0X') ? s : '0x' + s;
+      const hexStr = numPart.startsWith('0x') || numPart.startsWith('0X') ? numPart : '0x' + numPart;
       parsed = BigInt(hexStr);
     } catch {
       throw new LowlevelError('Unable to parse address: ' + s);
     }
-    const offset = AddrSpace.addressToByte(parsed, this.wordsize);
-    sizeRef.val = this.manage?.getDefaultSize?.() ?? this.addressSize;
+    let offset = AddrSpace.addressToByte(parsed, this.wordsize);
+    offset += extraOffset;
+    sizeRef.val = (explicitSize >= 0) ? explicitSize : (this.manage?.getDefaultSize?.() ?? this.addressSize);
     return offset;
   }
 

@@ -193,6 +193,43 @@ class RuleHumptyDumpty extends Rule {
     if (!grouplist.contains(this.getGroup())) return null;
     return new RuleHumptyDumpty(this.getGroup());
   }
+  getOpList(oplist: number[]): void {
+    oplist.push(OpCode.CPUI_PIECE);
+  }
+  applyOp(op: PcodeOp, data: Funcdata): number {
+    // op is PIECE (put together)
+    const vn1: Varnode = op.getIn(0)!;  // Most significant piece
+    if (!vn1.isWritten()) return 0;
+    const sub1: PcodeOp = vn1.getDef()!;
+    if (sub1.code() !== OpCode.CPUI_SUBPIECE) return 0;
+    const vn2: Varnode = op.getIn(1)!;  // Least significant piece
+    if (!vn2.isWritten()) return 0;
+    const sub2: PcodeOp = vn2.getDef()!;
+    if (sub2.code() !== OpCode.CPUI_SUBPIECE) return 0;
+
+    const root: Varnode = sub1.getIn(0)!;
+    if (root !== sub2.getIn(0)!) return 0;  // Must be pieces of the same whole
+
+    const pos1: bigint = sub1.getIn(1)!.getOffset();
+    const pos2: bigint = sub2.getIn(1)!.getOffset();
+    const size1: number = vn1.getSize();
+    const size2: number = vn2.getSize();
+
+    if (pos1 !== pos2 + BigInt(size2)) return 0;  // Pieces do not match up
+
+    if (pos2 === 0n && (size1 + size2 === root.getSize())) {
+      // Pieced together whole thing
+      data.opRemoveInput(op, 1);
+      data.opSetInput(op, root, 0);
+      data.opSetOpcode(op, OpCode.CPUI_COPY);
+    } else {
+      // Pieced together a larger part of the whole
+      data.opSetInput(op, root, 0);
+      data.opSetInput(op, data.newConstant(sub2.getIn(1)!.getSize(), pos2), 1);
+      data.opSetOpcode(op, OpCode.CPUI_SUBPIECE);
+    }
+    return 1;
+  }
 }
 
 class RuleDumptyHump extends Rule {
@@ -200,6 +237,44 @@ class RuleDumptyHump extends Rule {
   clone(grouplist: ActionGroupList): Rule | null {
     if (!grouplist.contains(this.getGroup())) return null;
     return new RuleDumptyHump(this.getGroup());
+  }
+  getOpList(oplist: number[]): void {
+    oplist.push(OpCode.CPUI_SUBPIECE);
+  }
+  applyOp(op: PcodeOp, data: Funcdata): number {
+    // If we append something to a varnode and then take a subpiece that
+    // cuts off what we just appended, treat whole thing as COPY
+    const base: Varnode = op.getIn(0)!;
+    if (!base.isWritten()) return 0;
+    const pieceop: PcodeOp = base.getDef()!;
+    if (pieceop.code() !== OpCode.CPUI_PIECE) return 0;
+    let offset: number = Number(op.getIn(1)!.getOffset());
+    const outsize: number = op.getOut()!.getSize();
+
+    const vn1: Varnode = pieceop.getIn(0)!;  // Most significant
+    const vn2: Varnode = pieceop.getIn(1)!;  // Least significant
+
+    let vn: Varnode;
+    if (offset < vn2.getSize()) {  // Sub draws from vn2
+      if (offset + outsize > vn2.getSize()) return 0;  // Also from vn1
+      vn = vn2;
+    } else {  // Sub draws from vn1
+      vn = vn1;
+      offset -= vn2.getSize();  // offset relative to vn1
+    }
+
+    if (vn.isFree() && !vn.isConstant()) return 0;
+    if (offset === 0 && outsize === vn.getSize()) {
+      // Eliminate SUB and CONCAT altogether
+      data.opSetOpcode(op, OpCode.CPUI_COPY);
+      data.opRemoveInput(op, 1);
+      data.opSetInput(op, vn, 0);  // Skip over CONCAT
+    } else {
+      // Eliminate CONCAT and adjust SUB
+      data.opSetInput(op, vn, 0);  // Skip over CONCAT
+      data.opSetInput(op, data.newConstant(4, BigInt(offset)), 1);
+    }
+    return 1;
   }
 }
 
@@ -1368,7 +1443,7 @@ export class ActionConstantPtr extends Action {
 
   /** Determine if given Varnode might be a pointer constant. */
   private static isPointer(spc: AddrSpace, vn: Varnode, op: PcodeOp, slot: number,
-    rampoint: { addr: Address }, fullEncoding: { value: bigint }, data: Funcdata): SymbolEntry | null {
+    rampoint: { addr: Address }, fullEncoding: { val: bigint }, data: Funcdata): SymbolEntry | null {
     let needexacthit: boolean;
     const glb: Architecture = data.getArch();
     let outvn: Varnode;
@@ -1473,11 +1548,11 @@ export class ActionConstantPtr extends Action {
       } else if (opc === OpCode.CPUI_PTRSUB || opc === OpCode.CPUI_PTRADD)
         continue;
       const rampoint = { addr: Address.invalid() };
-      const fullEncoding = { value: 0n };
+      const fullEncoding = { val: 0n };
       const entry = ActionConstantPtr.isPointer(rspc, vn, op, slot, rampoint, fullEncoding, data);
       vn.setPtrCheck();
       if (entry !== null) {
-        data.spacebaseConstant(op, slot, entry, rampoint.addr, fullEncoding.value, vn.getSize());
+        data.spacebaseConstant(op, slot, entry, rampoint.addr, fullEncoding.val, vn.getSize());
         if (opc === OpCode.CPUI_INT_ADD && slot === 1)
           data.opSwapInput(op, 0, 1);
         this.count += 1;
@@ -4993,7 +5068,7 @@ export class ActionInputPrototype extends Action {
     const active: ParamActive = new ParamActive(false);
     let vn: Varnode;
 
-    data.getScopeLocal()!.clearCategory((Symbol as any).fake_input);
+    data.getScopeLocal()!.clearCategory(3);  // Symbol.fake_input = 3
     data.getFuncProto().clearUnlockedInput();
     if (!data.getFuncProto().isInputLocked()) {
       for (const v of (data as any).getDefIter(Varnode.input)) {
@@ -5410,6 +5485,11 @@ export class ActionInferTypes extends Action {
       }
       if (needsBlock)
         vn.setStopUpPropagation();
+      if ((globalThis as any).__DEBUG_PROPAGATE__ && vn.getSize() === 16 && vn.getSpace()?.getName() === 'stack') {
+        const symEntry = vn.getSymbolEntry();
+        const symInfo = symEntry ? `sym=${symEntry.getSymbol().getName()}(typeLocked=${symEntry.getSymbol().isTypeLocked()},type=${symEntry.getSymbol().getType().getName()})` : 'no-sym';
+        process.stderr.write(`[buildLocaltypes] stack16 addr=${vn.getAddr().printRaw()} tempType=${ct.getName()}(meta=${ct.getMetatype()}) ${symInfo}\n`);
+      }
       vn.setTempType(ct);
     }
   }
@@ -5500,6 +5580,9 @@ export class ActionInferTypes extends Action {
     let ct: Datatype = vn.getTempType();
     if (ct.getMetatype() !== type_metatype.TYPE_PTR) return;
     ct = (ct as TypePointer).getPtrTo();
+    if ((globalThis as any).__DEBUG_PROPAGATE__) {
+      process.stderr.write(`[propagateRef] addr=${addr.printRaw()} ptrTo=${ct.getName()}(meta=${ct.getMetatype()},size=${ct.getSize()})\n`);
+    }
     if (ct.getMetatype() === type_metatype.TYPE_SPACEBASE) return;
     if (ct.getMetatype() === type_metatype.TYPE_UNKNOWN) return;	// Don't bother propagating this
     const off: bigint = addr.getOffset();

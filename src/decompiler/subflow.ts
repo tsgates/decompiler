@@ -2956,6 +2956,13 @@ export class RuleSplitCopy extends Rule {
     const outType: Datatype = op.getOut()!.getTypeDefFacing();
     const metain: type_metatype = inType.getMetatype();
     const metaout: type_metatype = outType.getMetatype();
+    if ((globalThis as any).__DEBUG_SPLITCOPY__ && op.getIn(0)!.getSize() > 8) {
+      const inName = inType.getName();
+      const outName = outType.getName();
+      const inBase = (metain === 7 && (inType as any).getBase) ? (inType as any).getBase().getName() : '?';
+      const outBase = (metaout === 7 && (outType as any).getBase) ? (outType as any).getBase().getName() : '?';
+      process.stderr.write(`[RuleSplitCopy] size=${op.getIn(0)!.getSize()} in=${inName}[base=${inBase}](meta=${metain}) out=${outName}[base=${outBase}](meta=${metaout}) inAddr=${op.getIn(0)!.getAddr().printRaw()} outAddr=${op.getOut()!.getAddr().printRaw()}\n`);
+    }
     if (metain !== TYPE_PARTIALSTRUCT && metaout !== TYPE_PARTIALSTRUCT &&
         metain !== TYPE_ARRAY && metaout !== TYPE_ARRAY &&
         metain !== TYPE_STRUCT && metaout !== TYPE_STRUCT)

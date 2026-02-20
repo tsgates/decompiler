@@ -3618,8 +3618,9 @@ export class Database {
     if (!scope.isGlobal()) return;
     // Iterate over scope ranges and add to resolvemap
     const rangetree = (scope as any).getRangeTree ? (scope as any).getRangeTree() : null;
-    if (rangetree !== null && rangetree.begin) {
-      for (const rng of rangetree) {
+    if (rangetree !== null) {
+      const ranges = rangetree.getRanges ? rangetree.getRanges() : [];
+      for (const rng of ranges) {
         this.resolvemap.push(
           new ScopeMapper(scope, rng.getFirstAddr(), rng.getLastAddr()),
         );

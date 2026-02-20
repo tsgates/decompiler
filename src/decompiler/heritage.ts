@@ -1478,10 +1478,173 @@ export class Heritage {
 
   // ---- Stubs for methods implemented in part 2 ----
 
-  private clearStackPlaceholders(info: HeritageInfo): void { /* TODO */ }
-  private splitJoinLevel(lastcombo: Varnode[], nextlev: Varnode[], joinrec: JoinRecord): void { /* TODO */ }
-  private splitJoinRead(vn: Varnode, joinrec: JoinRecord): void { /* TODO */ }
-  private splitJoinWrite(vn: Varnode, joinrec: JoinRecord): void { /* TODO */ }
+  private clearStackPlaceholders(info: HeritageInfo): void {
+    const numCalls: number = this.fd.numCalls();
+    for (let i = 0; i < numCalls; ++i) {
+      this.fd.getCallSpecs_byIndex(i).abortSpacebaseRelative(this.fd);
+    }
+    info.hasCallPlaceholders = false;
+  }
+  /**
+   * Recursively split join-space varnodes to the next level.
+   *
+   * For each varnode in \b lastcombo, determine if it needs to be split further
+   * to match the JoinRecord pieces. If a varnode's size matches a single piece,
+   * push it with null partner. Otherwise create a mosthalf/leasthalf split.
+   */
+  private splitJoinLevel(lastcombo: Varnode[], nextlev: Varnode[], joinrec: JoinRecord): void {
+    const numpieces: number = joinrec.numPieces();
+    let recnum = 0;
+    for (let i = 0; i < lastcombo.length; ++i) {
+      const curvn: Varnode = lastcombo[i];
+      if (curvn.getSize() === joinrec.getPiece(recnum).size) {
+        nextlev.push(curvn);
+        nextlev.push(null as any);  // null sentinel means "didn't get split"
+        recnum += 1;
+      } else {
+        let sizeaccum = 0;
+        let j: number;
+        for (j = recnum; j < numpieces; ++j) {
+          sizeaccum += joinrec.getPiece(j).size;
+          if (sizeaccum === curvn.getSize()) {
+            j += 1;
+            break;
+          }
+        }
+        const numinhalf: number = Math.floor((j - recnum) / 2); // Will be at least 1
+        sizeaccum = 0;
+        for (let k = 0; k < numinhalf; ++k)
+          sizeaccum += joinrec.getPiece(recnum + k).size;
+        let mosthalf: Varnode;
+        let leasthalf: Varnode;
+        if (numinhalf === 1) {
+          const piece = joinrec.getPiece(recnum);
+          mosthalf = this.fd.newVarnode(sizeaccum, new Address(piece.space as AddrSpace, piece.offset));
+        } else {
+          mosthalf = this.fd.newUnique(sizeaccum);
+        }
+        if ((j - recnum) === 2) {
+          const vdata = joinrec.getPiece(recnum + 1);
+          leasthalf = this.fd.newVarnode(vdata.size, new Address(vdata.space as AddrSpace, vdata.offset));
+        } else {
+          leasthalf = this.fd.newUnique(curvn.getSize() - sizeaccum);
+        }
+        nextlev.push(mosthalf);
+        nextlev.push(leasthalf);
+        recnum = j;
+      }
+    }
+  }
+
+  /**
+   * Construct pieces for a join-space Varnode read by an operation.
+   *
+   * Given a splitting specification (JoinRecord) and a Varnode, build a
+   * concatenation expression (out of PIECE operations) that constructs the
+   * Varnode out of the specified Varnode pieces.
+   */
+  private splitJoinRead(vn: Varnode, joinrec: JoinRecord): void {
+    let op: PcodeOp = vn.loneDescend()!; // vn isFree, so loneDescend must be non-null
+    let isPrimitive = true;
+    if (vn.isTypeLock()) {
+      isPrimitive = vn.getType()!.isPrimitiveWhole();
+    }
+
+    let lastcombo: Varnode[] = [vn];
+    let nextlev: Varnode[] = [];
+    while (lastcombo.length < joinrec.numPieces()) {
+      nextlev.length = 0;
+      this.splitJoinLevel(lastcombo, nextlev, joinrec);
+
+      for (let i = 0; i < lastcombo.length; ++i) {
+        const curvn: Varnode = lastcombo[i];
+        const mosthalf: Varnode = nextlev[2 * i];
+        const leasthalf: Varnode | null = nextlev[2 * i + 1];
+        if (leasthalf === null) continue; // Varnode didn't get split this level
+        const concat: PcodeOp = this.fd.newOp(2, op.getAddr());
+        this.fd.opSetOpcode(concat, CPUI_PIECE);
+        this.fd.opSetOutput(concat, curvn);
+        this.fd.opSetInput(concat, mosthalf, 0);
+        this.fd.opSetInput(concat, leasthalf, 1);
+        this.fd.opInsertBefore(concat, op);
+        if (isPrimitive) {
+          mosthalf.setPrecisHi();  // Set precision flags to trigger "double precision" rules
+          leasthalf.setPrecisLo();
+        } else {
+          this.fd.opMarkNoCollapse(concat);
+        }
+        op = concat; // Keep op as the earliest op in the concatenation construction
+      }
+
+      lastcombo = [];
+      for (let i = 0; i < nextlev.length; ++i) {
+        const curvn: Varnode | null = nextlev[i];
+        if (curvn !== null)
+          lastcombo.push(curvn);
+      }
+    }
+  }
+
+  /**
+   * Split a written join-space Varnode into specified pieces.
+   *
+   * Given a splitting specification (JoinRecord) and a Varnode, build a
+   * series of expressions that construct the specified Varnode pieces
+   * using SUBPIECE ops.
+   */
+  private splitJoinWrite(vn: Varnode, joinrec: JoinRecord): void {
+    let op: PcodeOp | null = vn.getDef(); // vn cannot be free, either it has def, or it is input
+    const bb = this.fd.getBasicBlocks().getBlock(0);
+    let isPrimitive = true;
+    if (vn.isTypeLock())
+      isPrimitive = vn.getType()!.isPrimitiveWhole();
+
+    let lastcombo: Varnode[] = [vn];
+    let nextlev: Varnode[] = [];
+    while (lastcombo.length < joinrec.numPieces()) {
+      nextlev.length = 0;
+      this.splitJoinLevel(lastcombo, nextlev, joinrec);
+      for (let i = 0; i < lastcombo.length; ++i) {
+        const curvn: Varnode = lastcombo[i];
+        const mosthalf: Varnode = nextlev[2 * i];
+        const leasthalf: Varnode | null = nextlev[2 * i + 1];
+        if (leasthalf === null) continue; // Varnode didn't get split this level
+        let split: PcodeOp;
+        if (vn.isInput())
+          split = this.fd.newOp(2, bb.getStart());
+        else
+          split = this.fd.newOp(2, op!.getAddr());
+        this.fd.opSetOpcode(split, CPUI_SUBPIECE);
+        this.fd.opSetOutput(split, mosthalf);
+        this.fd.opSetInput(split, curvn, 0);
+        this.fd.opSetInput(split, this.fd.newConstant(4, BigInt(leasthalf.getSize())), 1);
+        if (op === null)
+          this.fd.opInsertBegin(split, bb);
+        else
+          this.fd.opInsertAfter(split, op);
+        op = split; // Keep op as the latest op in the split construction
+
+        split = this.fd.newOp(2, op.getAddr());
+        this.fd.opSetOpcode(split, CPUI_SUBPIECE);
+        this.fd.opSetOutput(split, leasthalf);
+        this.fd.opSetInput(split, curvn, 0);
+        this.fd.opSetInput(split, this.fd.newConstant(4, 0n), 1);
+        this.fd.opInsertAfter(split, op);
+        if (isPrimitive) {
+          mosthalf.setPrecisHi();  // Set precision flags to trigger "double precision" rules
+          leasthalf.setPrecisLo();
+        }
+        op = split; // Keep op as the latest op in the split construction
+      }
+
+      lastcombo = [];
+      for (let i = 0; i < nextlev.length; ++i) {
+        const curvn: Varnode | null = nextlev[i];
+        if (curvn !== null)
+          lastcombo.push(curvn);
+      }
+    }
+  }
   private floatExtensionRead(vn: Varnode, joinrec: JoinRecord): void {
     const op: PcodeOp = vn.loneDescend()!; // vn isFree, so loneDescend must be non-null
     const trunc: PcodeOp = this.fd.newOp(1, op.getAddr());
@@ -1778,8 +1941,8 @@ export class Heritage {
     if (fc.getBiggestContainedInputParam(transAddr, size, vData)) {
       const active: ParamActive = fc.getActiveInput();
       let truncAddr = new Address(vData.space, vData.offset);
-      const diff: number = Number(truncAddr.getOffset() - transAddr.getOffset());
-      truncAddr = addr.add(BigInt(diff));  // Convert truncated Address to caller's perspective
+      const diff: bigint = truncAddr.getOffset() - transAddr.getOffset();
+      truncAddr = addr.add(diff);  // Convert truncated Address to caller's perspective
       if (active.whichTrial(truncAddr, size) < 0) { // If not already a trial
         const truncateAmount: number = addr.justifiedContain(size, truncAddr, vData.size, false);
         const op: PcodeOp = fc.getOp();
@@ -1861,8 +2024,8 @@ export class Heritage {
       return false;
     const active: ParamActive = fc.getActiveOutput();
     let truncAddr = new Address(vData.space, vData.offset);
-    const diff: number = Number(truncAddr.getOffset() - transAddr.getOffset());
-    truncAddr = addr.add(BigInt(diff));  // Convert truncated Address to caller's perspective
+    const diff: bigint = truncAddr.getOffset() - transAddr.getOffset();
+    truncAddr = addr.add(diff);  // Convert truncated Address to caller's perspective
     if (active.whichTrial(truncAddr, size) >= 0)
       return false;  // Trial already exists
     this.guardOutputOverlap(fc.getOp(), addr, size, truncAddr, vData.size, write);
@@ -1956,15 +2119,15 @@ export class Heritage {
       if (!fc.getBiggestContainedOutput(transAddr, size, vData))
         return false;
       let truncAddr = new Address(vData.space, vData.offset);
-      const diff: number = Number(truncAddr.getOffset() - transAddr.getOffset());
-      truncAddr = addr.add(BigInt(diff));  // Convert truncated Address to caller's perspective
+      const diff: bigint = truncAddr.getOffset() - transAddr.getOffset();
+      truncAddr = addr.add(diff);  // Convert truncated Address to caller's perspective
       this.guardOutputOverlapStack(callOp, addr, size, truncAddr, vData.size, write);
       return true;
     }
     // Reaching here, output exists and contains the heritage range
     let retAddr: Address = fc.getOutput().getAddress();
-    const diff: number = Number(addr.getOffset() - transAddr.getOffset());
-    retAddr = retAddr.add(BigInt(diff));  // Translate output address to caller perspective
+    const diff: bigint = addr.getOffset() - transAddr.getOffset();
+    retAddr = retAddr.add(diff);  // Translate output address to caller perspective
     const retSize: number = fc.getOutput().getSize();
     let outvn: Varnode | null = callOp.getOut();
     let vnFinal: Varnode | null = null;

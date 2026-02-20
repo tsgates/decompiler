@@ -4393,6 +4393,9 @@ export class Funcdata {
         if (entry.getSize() >= vnexemplar.getSize()) {
           if (updateDatatypes) {
             ct = entry.getSizedType(vnexemplar.getAddr(), vnexemplar.getSize());
+            if ((globalThis as any).__DEBUG_PROPAGATE__ && vnexemplar.getSize() === 16 && vnexemplar.getSpace()?.getName() === 'stack') {
+              process.stderr.write(`[syncVarnodes] stack16 addr=${vnexemplar.getAddr().printRaw()} entrySz=${entry.getSize()} symType=${entry.getSymbol().getType().getName()}(meta=${entry.getSymbol().getType().getMetatype()}) ct=${ct?.getName() ?? 'null'}(meta=${ct?.getMetatype() ?? '-'})\n`);
+            }
             if (ct !== null && ct.getMetatype() === type_metatype.TYPE_UNKNOWN) {
               ct = null;
             }
@@ -4502,6 +4505,9 @@ export class Funcdata {
         vn.clearFlags((~fl) & mask);
       }
       if (ct !== null) {
+        if ((globalThis as any).__DEBUG_PROPAGATE__ && vn.getSize() === 16 && vn.getSpace()?.getName() === 'stack') {
+          process.stderr.write(`[syncVarnodesWithSymbol] stack16 addr=${vn.getAddr().printRaw()} ct=${ct.getName()}(meta=${ct.getMetatype()}) vnType=${vn.getType()?.getName()}(meta=${vn.getType()?.getMetatype()}) typeLock=${vn.isTypeLock()}\n`);
+        }
         if (vn.updateType(ct)) {
           updateoccurred = true;
         }
