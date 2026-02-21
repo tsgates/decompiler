@@ -2857,8 +2857,9 @@ class SplitDatatype {
         loadOp = null;
         inType = inVn.getTypeReadFacing(storeOp);
         this.dataTypePieces.length = 0;
-        if (!this.testDatatypeCompatibility(inType, outType, inVn.isConstant()))
+        if (!this.testDatatypeCompatibility(inType, outType, inVn.isConstant())) {
           return false;
+        }
       }
       else
         return false;
@@ -2987,7 +2988,8 @@ export class RuleSplitCopy extends Rule {
         metain !== TYPE_STRUCT && metaout !== TYPE_STRUCT)
       return 0;
     const splitter = new SplitDatatype(data);
-    if (splitter.splitCopy(op, inType, outType))
+    const result = splitter.splitCopy(op, inType, outType);
+    if (result)
       return 1;
     return 0;
   }
@@ -3047,7 +3049,8 @@ export class RuleSplitStore extends Rule {
     if (metain !== TYPE_STRUCT && metain !== TYPE_ARRAY && metain !== TYPE_PARTIALSTRUCT)
       return 0;
     const splitter = new SplitDatatype(data);
-    if (splitter.splitStore(op, outType))
+    const result = splitter.splitStore(op, outType);
+    if (result)
       return 1;
     return 0;
   }

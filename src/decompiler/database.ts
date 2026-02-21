@@ -1450,8 +1450,22 @@ export class EntryMap {
   /** Return the number of entries (used by part 2 code) */
   size(): number { return this.entries.length; }
 
-  /** Insert a SymbolEntry (alias used by ScopeInternal) */
-  insertEntry(entry: SymbolEntry): void { this.entries.push(entry); }
+  /** Insert a SymbolEntry (alias used by ScopeInternal), maintaining sorted order */
+  insertEntry(entry: SymbolEntry): void {
+    this.entries.push(entry);
+    // Keep sorted by first offset, then subsort
+    this.entries.sort((a, b) => {
+      const aOff = a.getFirst();
+      const bOff = b.getFirst();
+      if (aOff < bOff) return -1;
+      if (aOff > bOff) return 1;
+      const aSub = a.getSubsort();
+      const bSub = b.getSubsort();
+      if (aSub.lessThan(bSub)) return -1;
+      if (bSub.lessThan(aSub)) return 1;
+      return 0;
+    });
+  }
 
   /** Erase (remove) a SymbolEntry (alias used by ScopeInternal) */
   eraseEntry(entry: SymbolEntry): void {

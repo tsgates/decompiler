@@ -41,16 +41,8 @@ describe('Decompiler datatests', () => {
     return;
   }
 
-  // Tests known to cause infinite loops in the TS decompiler
-  const SKIP = new Set(['partialsplit', 'skipnext2', 'pointersub', 'pointerrel']);
-
   for (const testFile of testFiles) {
     const basename = path.basename(testFile, '.xml');
-
-    if (SKIP.has(basename)) {
-      it.skip(basename, () => {});
-      continue;
-    }
 
     it(basename, { timeout: 30000 }, () => {
       const writer = new StringWriter();

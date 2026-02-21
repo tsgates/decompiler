@@ -3208,8 +3208,15 @@ export class TypePointerRel extends TypePointer {
   isPtrsubMatching(off: bigint, extra: bigint, multiplier: bigint): boolean {
     if (this.stripped !== null)
       return super.isPtrsubMatching(off, extra, multiplier);
-    let iOff = Number(AddrSpace.addressToByteInt(off, this.wordsize));
-    const extraByte = Number(AddrSpace.addressToByteInt(extra, this.wordsize));
+    // In C++, iOff is int4 (signed 32-bit) and addressToByteInt returns intb (signed).
+    // BigInt values from the decompiler use unsigned representation, so we must
+    // sign-extend before converting to Number to match C++ signed arithmetic.
+    let offSigned = AddrSpace.addressToByteInt(off, this.wordsize);
+    if (offSigned >= (1n << 63n)) offSigned -= (1n << 64n);
+    let iOff = Number(offSigned);
+    let extraSigned = AddrSpace.addressToByteInt(extra, this.wordsize);
+    if (extraSigned >= (1n << 63n)) extraSigned -= (1n << 64n);
+    const extraByte = Number(extraSigned);
     iOff += this.offset + extraByte;
     return (iOff >= 0 && iOff <= this.parent.getSize());
   }

@@ -456,12 +456,15 @@ export class FlowInfo {
           break;
         case OpCode.CPUI_CALL:
           if (this.setupCallSpecs(op, fc)) {
-            oiter--; // Backup one op, to pickup halt
+            // In C++ (std::list), --oiter would backup to the newly inserted halt op.
+            // In our array-based implementation, insertAfterDead uses splice which shifts
+            // all subsequent elements right, so oiter already points to the halt op.
+            // No decrement needed.
           }
           break;
         case OpCode.CPUI_CALLIND:
           if (this.setupCallindSpecs(op, fc)) {
-            oiter--; // Backup one op, to pickup halt
+            // Same as CPUI_CALL: no decrement needed for array-based deadlist.
           }
           break;
         case OpCode.CPUI_CALLOTHER: {
