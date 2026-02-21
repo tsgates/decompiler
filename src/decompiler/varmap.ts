@@ -257,8 +257,11 @@ export class RangeHint {
     if (meta !== TYPE_INT && meta !== TYPE_UINT && meta !== TYPE_BOOL && meta !== TYPE_FLOAT)
       return false;
     const bMeta = b.type!.getMetatype();
-    if (bMeta !== TYPE_UNKNOWN && bMeta !== TYPE_INT && bMeta !== TYPE_UINT)
-      return false;
+    if (bMeta !== TYPE_UNKNOWN && bMeta !== TYPE_INT && bMeta !== TYPE_UINT) {
+      // Also accept TYPE_ARRAY of TYPE_UNKNOWN (raw byte buffer from fillinReadOnlyLarge)
+      if (bMeta !== TYPE_ARRAY || (b.type as any).getBase().getMetatype() !== TYPE_UNKNOWN)
+        return false;
+    }
     let end: bigint = this.sstart;
     if (this.highind > 0)
       end += BigInt(this.highind) * BigInt(this.type!.getAlignSize());
@@ -351,11 +354,19 @@ export class RangeHint {
         return false;    // Throw out open range
       if (this.isConstAbsorbable(b))
         return true;
+      // If the fixed range is a TYPE_ARRAY of TYPE_UNKNOWN, it is just a placeholder;
+      // prefer the open range which has a more meaningful type.
+      if (b.type!.getMetatype() === TYPE_ARRAY && (b.type as any).getBase().getMetatype() === TYPE_UNKNOWN)
+        return true;
     }
     else if (b.rangeType === RangeType.open && this.rangeType !== RangeType.open) {
       if (!reconcileFlag)
         return true;     // Throw out open range
       if (b.isConstAbsorbable(this))
+        return false;
+      // If the fixed range is a TYPE_ARRAY of TYPE_UNKNOWN, it is just a placeholder;
+      // prefer the open range which has a more meaningful type.
+      if (this.type!.getMetatype() === TYPE_ARRAY && (this.type as any).getBase().getMetatype() === TYPE_UNKNOWN)
         return false;
     }
     else if (this.rangeType === RangeType.fixed && b.rangeType === RangeType.fixed) {
@@ -1123,8 +1134,11 @@ export class MapState {
           break;
         }
         case CPUI_COPY:
-          this.addFixedType(vn.getOffset(), vn.getType(), op.getIn(0).isConstant() ? RANGEHINT_COPY_CONSTANT : 0, types);
+        {
+          const flags = op.getIn(0).isConstant() ? RANGEHINT_COPY_CONSTANT : 0;
+          this.addFixedType(vn.getOffset(), vn.getType(), flags, types);
           break;
+        }
         default:
           this.addFixedType(vn.getOffset(), vn.getType(), 0, types);
           break;

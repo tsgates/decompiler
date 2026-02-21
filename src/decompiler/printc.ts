@@ -81,7 +81,7 @@ type ResolvedUnion = any;
 type AddrSpace = any;
 type JumpTable = any;
 type Comment = any;
-type TypeOpFloatInt2Float = any;
+import { TypeOpFloatInt2Float } from './typeop.js';
 
 // =========================================================================
 // PartialSymbolEntry -- helper for unraveling nested field references
@@ -857,7 +857,8 @@ export class PrintC extends PrintLanguage {
   }
 
   opCallother(op: PcodeOp): void {
-    const userop: UserPcodeOp | null = this.glb.userops.getOp(Number(op.getIn(0).getOffset()));
+    const opIdx = Number(op.getIn(0).getOffset());
+    const userop: UserPcodeOp | null = this.glb.userops.getOp(opIdx);
     if (userop === null) {
       // Fallback: emit using functional syntax with the opcode name
       const nm: string = op.getOpcode().getOperatorName(op);
@@ -893,15 +894,16 @@ export class PrintC extends PrintLanguage {
     } else if (display === 2) {
       // no_operator
       this.pushVn(op.getIn(1), op, this.mods);
-    } else if (display === 3) {
-      // display_string
+    } else if (display === 4) {
+      // display_string (UserPcodeOp.display_string = 4)
       const vn: Varnode = op.getOut();
       let ct: Datatype = vn.getType();
-      let str: string;
+      let str: string = '';
+      const writer: Writer = { write(s: string) { str += s; } };
       if (ct.getMetatype() === type_metatype.TYPE_PTR) {
         ct = ct.getPtrTo();
-        // Simplified: try to print character constant
-        str = '"badstring"';
+        if (!this.printCharacterConstant(writer, op.getIn(1).getAddr(), ct))
+          str = '"badstring"';
       } else {
         str = '"badstring"';
       }
@@ -1001,16 +1003,8 @@ export class PrintC extends PrintLanguage {
   }
 
   opFloatInt2Float(op: PcodeOp): void {
-    // TypeOpFloatInt2Float::absorbZext(op) -- simplified
-    let vn0: Varnode = op.getIn(0);
-    // Check for absorbed zext
-    if (vn0.isWritten()) {
-      const defOp = vn0.getDef();
-      if (defOp.code() === OpCode.CPUI_INT_ZEXT) {
-        // absorbZext logic: check if the zext can be absorbed
-        // Simplified: just use the direct input
-      }
-    }
+    const zextOp = TypeOpFloatInt2Float.absorbZext(op);
+    const vn0: Varnode = (zextOp !== null) ? zextOp.getIn(0) : op.getIn(0);
     const dt: Datatype = op.getOut().getHighTypeDefFacing();
     if (!this.option_nocasts) {
       this.pushOp(PrintC.typecast, op);

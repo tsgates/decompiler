@@ -1309,11 +1309,11 @@ export class FlowInfo {
     try {
       for (let i = 0; i < this.tablelist.length; i++) {
         const tableOp = this.tablelist[i];
-        const modeHolder = { mode: 0 };
+        const modeHolder = { value: 0 };
         const jt = this.data.recoverJumpTable(partial, tableOp, this, modeHolder); // Recover it
         if (jt === null) { // Could not recover jumptable
           if (!this.isFlowForInline()) { // Unless this flow is being inlined for something else
-            this.truncateIndirectJump(tableOp, modeHolder.mode); // Treat the indirect jump as a call
+            this.truncateIndirectJump(tableOp, modeHolder.value); // Treat the indirect jump as a call
           }
         } else if (jt.isPartial()) {
           if (this.tablelist.length > 1 && !FlowInfo.isInArray(notreached, tableOp)) {
@@ -1602,6 +1602,8 @@ export class FlowInfo {
     if (this.hasInject()) {
       this.injectPcode();
     }
+    let multistageIter = 0;
+    const MAX_MULTISTAGE_ITER = 10; // Safety limit to prevent infinite multistage loops
     do {
       while (this.tablelist.length > 0) { // For each jumptable found
         const newTables: JumpTable[] = [];
@@ -1629,6 +1631,11 @@ export class FlowInfo {
       }
       if (this.hasInject()) {
         this.injectPcode();
+      }
+      multistageIter += 1;
+      if (multistageIter > MAX_MULTISTAGE_ITER) {
+        this.data.warningHeader("Exceeded maximum multistage jumptable iterations");
+        break;
       }
     } while (this.tablelist.length > 0); // Inlining or multistage may have added new indirect branches
   }
@@ -1751,8 +1758,8 @@ export class FlowInfo {
    * @param retaddr is the first address after the call site in this flow
    */
   inlineClone(inlineflow: FlowInfo, retaddr: Address): void {
-    const deadBegin = inlineflow.data.beginOpDead();
-    const deadEnd = inlineflow.data.endOpDead();
+    const deadBegin = inlineflow.obank.beginDead();
+    const deadEnd = inlineflow.obank.endDead();
     for (let iter = deadBegin; iter < deadEnd; iter++) {
       const op = inlineflow.obank.getDeadOp(iter);
       let cloneop: PcodeOp;
@@ -1800,8 +1807,8 @@ export class FlowInfo {
    * @param calladdr is the fixed address assigned to the cloned PcodeOps
    */
   inlineEZClone(inlineflow: FlowInfo, calladdr: Address): void {
-    const deadBegin = inlineflow.data.beginOpDead();
-    const deadEnd = inlineflow.data.endOpDead();
+    const deadBegin = inlineflow.obank.beginDead();
+    const deadEnd = inlineflow.obank.endDead();
     for (let iter = deadBegin; iter < deadEnd; iter++) {
       const op = inlineflow.obank.getDeadOp(iter);
       if (op.code() === OpCode.CPUI_RETURN) break;

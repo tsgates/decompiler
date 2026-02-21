@@ -1177,6 +1177,8 @@ export class HighVariable {
     }
 
     // Merge two sorted arrays (equivalent to std::merge with compareJustLoc)
+    // std::merge is stable: when elements are equivalent (same location),
+    // elements from the first range come before elements from the second range.
     const instcopy = this._inst.slice();
     const a = instcopy;
     const b = tv2._inst;
@@ -1184,12 +1186,12 @@ export class HighVariable {
     let ai = 0;
     let bi = 0;
     while (ai < a.length && bi < b.length) {
-      if (HighVariable.compareJustLoc(a[ai], b[bi])) {
-        this._inst.push(a[ai]);
-        ai++;
-      } else {
+      if (HighVariable.compareJustLoc(b[bi], a[ai])) {
         this._inst.push(b[bi]);
         bi++;
+      } else {
+        this._inst.push(a[ai]);
+        ai++;
       }
     }
     while (ai < a.length) {

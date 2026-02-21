@@ -28,7 +28,7 @@ import {
   BlockGraph,
 } from '../decompiler/block.js';
 import { Datatype, type_metatype } from '../decompiler/type.js';
-import { FuncProto, FuncCallSpecs, ParamTrial, ParamActive, ProtoModel, EffectRecord } from '../decompiler/fspec.js';
+import { FuncProto, FuncCallSpecs, ParamTrial, ParamActive, ProtoModel, EffectRecord, registerAncestorRealisticCtor } from '../decompiler/fspec.js';
 import {
   Symbol,
   FunctionSymbol,
@@ -99,8 +99,8 @@ declare class PcodeOpEvalType { [k: string]: any; static unspecialized: number; 
 enum JumpTableRecoveryMode {
   success = 0,
   fail_normal = 1,
-  fail_return = 2,
-  fail_thunk = 3,
+  fail_thunk = 2,
+  fail_return = 3,
   fail_callother = 4,
 }
 
@@ -689,14 +689,10 @@ export class Funcdata {
   beginOp(opcOrAddr: OpCode | Address): ListIter<PcodeOp> {
     if (typeof opcOrAddr === 'object' && opcOrAddr !== null && typeof (opcOrAddr as any).getOffset === 'function') {
       // Address overload: find first alive op at or after this address
+      // Use the optree (sorted by SeqNum) for correct ordering
       const addr = opcOrAddr as Address;
-      const list = this.obank.getAliveList();
-      for (let i = 0; i < list.length; i++) {
-        if (list[i].getAddr().getOffset() >= addr.getOffset()) {
-          return new ListIter(list, i);
-        }
-      }
-      return new ListIter(list, list.length);
+      const idx = this.obank.beginAtAddr(addr);
+      return new ListIter(this.obank.getOpTreeView(), idx);
     }
     const list = this.obank.getCodeList(opcOrAddr as OpCode);
     return new ListIter(list, 0);
@@ -706,14 +702,10 @@ export class Funcdata {
   endOp(opcOrAddr: OpCode | Address): ListIter<PcodeOp> {
     if (typeof opcOrAddr === 'object' && opcOrAddr !== null && typeof (opcOrAddr as any).getOffset === 'function') {
       // Address overload: find first alive op strictly after this address
+      // Use the optree (sorted by SeqNum) for correct ordering
       const addr = opcOrAddr as Address;
-      const list = this.obank.getAliveList();
-      for (let i = 0; i < list.length; i++) {
-        if (list[i].getAddr().getOffset() > addr.getOffset()) {
-          return new ListIter(list, i);
-        }
-      }
-      return new ListIter(list, list.length);
+      const idx = this.obank.endAtAddr(addr);
+      return new ListIter(this.obank.getOpTreeView(), idx);
     }
     const list = this.obank.getCodeList(opcOrAddr as OpCode);
     return new ListIter(list, list.length);
@@ -745,14 +737,14 @@ export class Funcdata {
 
   /// Start of all (alive) PcodeOp objects sorted by sequence number
   beginOpAll(): ListIter<PcodeOp> {
-    const list = this.obank.getAliveList();
-    return new ListIter(list, 0);
+    const view = this.obank.getOpTreeView();
+    return new ListIter(view, 0);
   }
 
   /// End of all (alive) PcodeOp objects sorted by sequence number
   endOpAll(): ListIter<PcodeOp> {
-    const list = this.obank.getAliveList();
-    return new ListIter(list, list.length);
+    const view = this.obank.getOpTreeView();
+    return new ListIter(view, view.length);
   }
 
   /// Get an iterable of PcodeOp objects matching the given op-code
@@ -1942,6 +1934,16 @@ export class Funcdata {
       } else {
         jt.recoverAddresses(partial);
       }
+      // TS-specific workaround: if the partial recovery found fewer addresses than
+      // the pre-recovered set from a prior matchModel pass, use the pre-recovered set.
+      // This handles the case where the partial function analysis cannot determine
+      // the full switch table but the full function analysis can.
+      {
+        const preRecovered = this.getOverride().queryMultistageAddresses(op.getAddr());
+        if (preRecovered !== null && preRecovered.length > jt.numEntries()) {
+          jt.overrideAddresses(preRecovered);
+        }
+      }
     } catch (err) {
       if (err instanceof JumptableThunkError) {
         return JumpTableRecoveryMode.fail_thunk;
@@ -2912,7 +2914,7 @@ export class Funcdata {
       if (newop === null) {
         throw new LowlevelError("Could not trace jumptable across partial clone");
       }
-      const jtclone = new JumpTable(jt);
+      const jtclone = JumpTable.copyFrom(jt);
       jtclone.setIndirectOp(newop);
       this.jumpvec.push(jtclone);
     }
@@ -4113,7 +4115,7 @@ export class Funcdata {
     }
 
     if (vn.getSize() > 8) {
-      return false; // Constant will exceed precision
+      return this.fillinReadOnlyLarge(vn); // Handle large readonly varnodes via SUBPIECE
     }
 
     let bytes: Uint8Array;
@@ -4146,6 +4148,7 @@ export class Funcdata {
     let changemade: boolean = false;
     const locktype: Datatype | null = vn.isTypeLock() ? vn.getType() : null;
 
+
     const descendants: PcodeOp[] = [...vn.descend];
     for (const op of descendants) {
       const i: number = op.getSlot(vn);
@@ -4164,6 +4167,171 @@ export class Funcdata {
       }
       this.opSetInput(op, cvn, i);
       changemade = true;
+    }
+    return changemade;
+  }
+
+  /// Handle a readonly Varnode larger than 8 bytes by finding SUBPIECE
+  /// descendant ops that extract <= 8 byte pieces, loading the raw bytes
+  /// from LoadImage, computing the extracted constant, and replacing each
+  /// SUBPIECE with a COPY of that constant. This allows downstream rules
+  /// (like floatSignManipulation) to see actual constant values.
+  fillinReadOnlyLarge(vn: Varnode): boolean {
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(vn.getSize());
+      this.glb.loader.loadFill(bytes, vn.getSize(), vn.getAddr());
+    } catch (err) {
+      vn.clearFlags(Varnode.readonly);
+      return true;
+    }
+
+    let changemade = false;
+    const isBigEndian = vn.getSpace()!.isBigEndian();
+
+    // Iterate over all descendant ops of this varnode
+    const descendants: PcodeOp[] = [...vn.descend];
+    for (const op of descendants) {
+      if (op.code() === OpCode.CPUI_SUBPIECE) {
+        const outSize = op.getOut()!.getSize();
+        if (outSize > 8) continue; // Still too large for a constant
+
+        const byteOffset = Number(op.getIn(1)!.getOffset());
+
+        // Extract the constant value from the byte array
+        let res = 0n;
+        if (isBigEndian) {
+          // In big endian, SUBPIECE byte offset is from the least significant end
+          const startByte = vn.getSize() - byteOffset - outSize;
+          for (let i = 0; i < outSize; i++) {
+            res <<= 8n;
+            res |= BigInt(bytes[startByte + i]);
+          }
+        } else {
+          // In little endian, SUBPIECE byte offset is from byte 0
+          for (let i = outSize - 1; i >= 0; i--) {
+            res <<= 8n;
+            res |= BigInt(bytes[byteOffset + i]);
+          }
+        }
+        res = res & calc_mask(outSize);
+
+        // Replace the SUBPIECE with a COPY of the constant
+        const cvn = this.newConstant(outSize, res);
+        this.opRemoveInput(op, 1); // Remove the byte offset input
+        this.opSetOpcode(op, OpCode.CPUI_COPY);
+        this.opSetInput(op, cvn, 0);
+        changemade = true;
+      } else if (op.code() === OpCode.CPUI_COPY && op.getSlot(vn) === 0) {
+        // Replace the readonly COPY input with a constant of the same value.
+        // For COPY: allows RuleSplitCopy/RuleStringCopy to split into char-sized COPYs.
+        // But skip if the COPY output feeds into a STORE - a 16-byte constant in a STORE
+        // overrides char* pointer type in type propagation (xunknown1[16] wins over char).
+        // Instead, we let the STORE handler (below) split it into <=8-byte pieces.
+        // Skip COPY with no descendants (dead code) - don't waste a pass
+        const copyOut = op.getOut();
+        if (copyOut !== null && copyOut.hasNoDescend()) continue;
+        // Check if COPY output feeds into a STORE
+        if (copyOut !== null) {
+          let feedsStore = false;
+          for (const desc of copyOut.descend) {
+            if (desc.code() === OpCode.CPUI_STORE && desc.getSlot(copyOut) === 2) {
+              feedsStore = true;
+              break;
+            }
+          }
+          if (feedsStore) continue;
+        }
+        let res = 0n;
+        if (isBigEndian) {
+          for (let i = 0; i < vn.getSize(); i++) {
+            res <<= 8n;
+            res |= BigInt(bytes[i]);
+          }
+        } else {
+          for (let i = vn.getSize() - 1; i >= 0; i--) {
+            res <<= 8n;
+            res |= BigInt(bytes[i]);
+          }
+        }
+        const cvn = this.newConstant(vn.getSize(), res);
+        this.opSetInput(op, cvn, 0);
+        changemade = true;
+      } else if (op.code() === OpCode.CPUI_STORE && op.getSlot(vn) === 2) {
+        // Split the large STORE into multiple <=8-byte STOREs, each with a constant value.
+        // This mimics what C++ Heritage does by splitting 16-byte operations into 8-byte pieces,
+        // allowing fillinReadOnly to convert each piece to a constant.
+        const storeSize = vn.getSize();
+        const spcVn = op.getIn(0)!;
+        const ptrVn = op.getIn(1)!;
+        const storeAddr = op.getAddr();
+        const spc = spcVn.getSpaceFromConst();
+
+        // Split into maxPiece-byte chunks (matching C++ uintb size of 8)
+        const maxPiece = 8;
+        let offset = 0;
+        const newStores: PcodeOp[] = [];
+        while (offset < storeSize) {
+          const pieceSize = Math.min(maxPiece, storeSize - offset);
+
+          // Extract the constant value for this piece
+          let res = 0n;
+          if (isBigEndian) {
+            for (let i = 0; i < pieceSize; i++) {
+              res <<= 8n;
+              res |= BigInt(bytes[offset + i]);
+            }
+          } else {
+            for (let i = pieceSize - 1; i >= 0; i--) {
+              res <<= 8n;
+              res |= BigInt(bytes[offset + i]);
+            }
+          }
+          res = res & calc_mask(pieceSize);
+
+          // Create new STORE: STORE spc, ptr+offset, constant
+          const newOp = this.newOp(3, storeAddr);
+          this.opSetOpcode(newOp, OpCode.CPUI_STORE);
+          this.opSetInput(newOp, this.newVarnodeSpace(spc!), 0);
+
+          // Create pointer with offset: INT_ADD ptr, offset_const
+          if (offset === 0) {
+            // For the first piece, use the original pointer directly
+            const ptrCopy = this.newUniqueOut(ptrVn.getSize(), this.newOp(1, storeAddr));
+            this.opSetOpcode(ptrCopy.getDef()!, OpCode.CPUI_COPY);
+            this.opSetInput(ptrCopy.getDef()!, ptrVn, 0);
+            this.opInsertBefore(ptrCopy.getDef()!, op);
+            this.opSetInput(newOp, ptrCopy, 1);
+          } else {
+            const addOp = this.newOp(2, storeAddr);
+            this.opSetOpcode(addOp, OpCode.CPUI_INT_ADD);
+            const addOut = this.newUniqueOut(ptrVn.getSize(), addOp);
+            this.opSetInput(addOp, ptrVn, 0);
+            this.opSetInput(addOp, this.newConstant(ptrVn.getSize(), BigInt(offset)), 1);
+            this.opInsertBefore(addOp, op);
+            this.opSetInput(newOp, addOut, 1);
+          }
+
+          this.opSetInput(newOp, this.newConstant(pieceSize, res), 2);
+          this.opInsertBefore(newOp, op);
+          newStores.push(newOp);
+
+          offset += pieceSize;
+        }
+
+        // Remove the original large STORE
+        this.opDestroy(op);
+        changemade = true;
+      } else if (op.isMarker()) {
+        if (op.code() === OpCode.CPUI_INDIRECT && op.getSlot(vn) === 0) {
+          const outvn = op.getOut()!;
+          if (!outvn.getAddr().equals(vn.getAddr())) {
+            // Change the indirect to a COPY
+            this.opRemoveInput(op, 1);
+            this.opSetOpcode(op, OpCode.CPUI_COPY);
+          }
+        }
+      }
     }
     return changemade;
   }
@@ -4393,9 +4561,6 @@ export class Funcdata {
         if (entry.getSize() >= vnexemplar.getSize()) {
           if (updateDatatypes) {
             ct = entry.getSizedType(vnexemplar.getAddr(), vnexemplar.getSize());
-            if ((globalThis as any).__DEBUG_PROPAGATE__ && vnexemplar.getSize() === 16 && vnexemplar.getSpace()?.getName() === 'stack') {
-              process.stderr.write(`[syncVarnodes] stack16 addr=${vnexemplar.getAddr().printRaw()} entrySz=${entry.getSize()} symType=${entry.getSymbol().getType().getName()}(meta=${entry.getSymbol().getType().getMetatype()}) ct=${ct?.getName() ?? 'null'}(meta=${ct?.getMetatype() ?? '-'})\n`);
-            }
             if (ct !== null && ct.getMetatype() === type_metatype.TYPE_UNKNOWN) {
               ct = null;
             }
@@ -4505,9 +4670,6 @@ export class Funcdata {
         vn.clearFlags((~fl) & mask);
       }
       if (ct !== null) {
-        if ((globalThis as any).__DEBUG_PROPAGATE__ && vn.getSize() === 16 && vn.getSpace()?.getName() === 'stack') {
-          process.stderr.write(`[syncVarnodesWithSymbol] stack16 addr=${vn.getAddr().printRaw()} ct=${ct.getName()}(meta=${ct.getMetatype()}) vnType=${vn.getType()?.getName()}(meta=${vn.getType()?.getMetatype()}) typeLock=${vn.isTypeLock()}\n`);
-        }
         if (vn.updateType(ct)) {
           updateoccurred = true;
         }
@@ -5628,6 +5790,9 @@ export class AncestorRealistic {
     return false;
   }
 }
+
+// Register AncestorRealistic constructor for use in fspec.ts (breaking circular dependency)
+registerAncestorRealisticCtor(AncestorRealistic);
 
 /// State node for AncestorRealistic depth-first traversal.
 class AncestorRealisticState {

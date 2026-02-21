@@ -44,6 +44,14 @@ type PrototypePieces = any;
 // They will be replaced when the respective modules are translated.
 class FuncProto { [key: string]: any; }
 
+// Late-bound FuncProto constructor, populated by fspec.ts at import time
+let _FuncProtoCtor: any = FuncProto;
+
+/** Called by fspec.ts to register the real FuncProto constructor */
+export function registerFuncProtoClass(ctor: any): void {
+  _FuncProtoCtor = ctor;
+}
+
 // ScoreUnionFields and ResolvedUnion have a circular dependency with type.ts
 // We use late-bound constructor references populated by unionresolve.ts at import time
 let ScoreUnionFields: any = null;
@@ -3260,7 +3268,7 @@ class TypeCode extends Datatype {
       this.factory = op.factory;
       if (op.proto !== null) {
         // In TS we store a reference to a copied proto
-        this.proto = new (FuncProto as any)();
+        this.proto = new _FuncProtoCtor();
         this.proto!.copy(op.proto);
       }
     } else {
@@ -3417,7 +3425,7 @@ class TypeCode extends Datatype {
     if (decoder.peekElement() !== 0) {
       const glb: Architecture = typegrp.getArch();
       this.factory = typegrp;
-      this.proto = new (FuncProto as any)();
+      this.proto = new _FuncProtoCtor();
       this.proto!.setInternal(glb.defaultfp, typegrp.getTypeVoid());
       this.proto!.decode(decoder, glb);
       this.proto!.setConstructor(isConstructor);
@@ -3434,7 +3442,7 @@ class TypeCode extends Datatype {
     this.flags |= DT_variable_length;
     if (this.proto !== null)
       this.proto = null; // GC handles cleanup
-    this.proto = new (FuncProto as any)();
+    this.proto = new _FuncProtoCtor();
     this.proto!.setInternal(sig.model, voidtype);
     this.proto!.updateAllTypes(sig);
     this.proto!.setInputLock(true);
@@ -3451,7 +3459,7 @@ class TypeCode extends Datatype {
     }
     if (fp !== null) {
       this.factory = typegrp;
-      this.proto = new (FuncProto as any)();
+      this.proto = new _FuncProtoCtor();
       this.proto!.copy(fp);
     }
   }

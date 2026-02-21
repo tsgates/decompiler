@@ -75,6 +75,8 @@ export class Override {
   private protoover: Map<string, [Address, FuncProto]> = new Map();
   /** Addresses of indirect jumps that need multistage recovery */
   private multistagejump: Address[] = [];
+  /** Pre-recovered addresses for multistage jump tables (TS-specific workaround) */
+  private multistageAddresses: Map<string, Address[]> = new Map();
   /** Override the CALL <-> BRANCH */
   private flowoverride: Map<string, [Address, number]> = new Map();
 
@@ -92,6 +94,7 @@ export class Override {
     this.indirectover.clear();
     this.protoover.clear();
     this.multistagejump = [];
+    this.multistageAddresses.clear();
     this.flowoverride.clear();
   }
 
@@ -245,6 +248,29 @@ export class Override {
         return true;
     }
     return false;
+  }
+
+  /**
+   * Store pre-recovered addresses for a multistage jump table.
+   * This is a TS-specific workaround: when the model on the full function
+   * successfully recovers multiple addresses but the partial function analysis
+   * consistently finds only 1, we store the addresses here so they can be
+   * used during generateOps after restart.
+   * @param addr - the address of the indirect jump
+   * @param addresses - the recovered destination addresses
+   */
+  insertMultistageAddresses(addr: Address, addresses: Address[]): void {
+    this.multistageAddresses.set(Override.addrKey(addr), [...addresses]);
+  }
+
+  /**
+   * Query for pre-recovered multistage addresses.
+   * @param addr - the address of the indirect jump
+   * @returns the pre-recovered addresses, or null if none
+   */
+  queryMultistageAddresses(addr: Address): Address[] | null {
+    const key = Override.addrKey(addr);
+    return this.multistageAddresses.get(key) ?? null;
   }
 
   /**

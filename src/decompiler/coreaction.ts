@@ -185,6 +185,29 @@ class RuleShiftSub extends Rule {
     if (!grouplist.contains(this.getGroup())) return null;
     return new RuleShiftSub(this.getGroup());
   }
+  getOpList(oplist: number[]): void {
+    oplist.push(OpCode.CPUI_SUBPIECE);
+  }
+  applyOp(op: PcodeOp, data: Funcdata): number {
+    if (!op.getIn(0)!.isWritten()) return 0;
+    const shiftop: PcodeOp = op.getIn(0)!.getDef()!;
+    if (shiftop.code() !== OpCode.CPUI_INT_LEFT) return 0;
+    const sa: Varnode = shiftop.getIn(1)!;
+    if (!sa.isConstant()) return 0;
+    const n: number = Number(sa.getOffset());
+    if ((n & 7) !== 0) return 0;       // Must shift by a multiple of 8 bits
+    let c: number = Number(op.getIn(1)!.getOffset());
+    const vn: Varnode = shiftop.getIn(0)!;
+    if (vn.isFree()) return 0;
+    const insize: number = vn.getSize();
+    const outsize: number = op.getOut()!.getSize();
+    c -= n / 8;
+    if (c < 0 || c + outsize > insize)  // Check if this is a natural truncation
+      return 0;
+    data.opSetInput(op, vn, 0);
+    data.opSetInput(op, data.newConstant(op.getIn(1)!.getSize(), BigInt(c)), 1);
+    return 1;
+  }
 }
 
 class RuleHumptyDumpty extends Rule {
@@ -299,6 +322,25 @@ class RuleCondNegate extends Rule {
   clone(grouplist: ActionGroupList): Rule | null {
     if (!grouplist.contains(this.getGroup())) return null;
     return new RuleCondNegate(this.getGroup());
+  }
+
+  getOpList(oplist: number[]): void {
+    oplist.push(OpCode.CPUI_CBRANCH);
+  }
+
+  applyOp(op: PcodeOp, data: Funcdata): number {
+    if (!op.isBooleanFlip()) return 0;
+
+    const vn: Varnode = op.getIn(1)!;
+    const newop: PcodeOp = data.newOp(1, op.getAddr());
+    data.opSetOpcode(newop, OpCode.CPUI_BOOL_NEGATE);
+    const outvn: Varnode = data.newUniqueOut(1, newop);
+    data.opSetInput(newop, vn, 0);
+    data.opSetInput(op, outvn, 1);
+    data.opInsertBefore(newop, op);
+    data.opFlipCondition(op);  // Flip meaning of condition
+    // NOTE fallthru block is still same status
+    return 1;
   }
 }
 
@@ -5485,11 +5527,6 @@ export class ActionInferTypes extends Action {
       }
       if (needsBlock)
         vn.setStopUpPropagation();
-      if ((globalThis as any).__DEBUG_PROPAGATE__ && vn.getSize() === 16 && vn.getSpace()?.getName() === 'stack') {
-        const symEntry = vn.getSymbolEntry();
-        const symInfo = symEntry ? `sym=${symEntry.getSymbol().getName()}(typeLocked=${symEntry.getSymbol().isTypeLocked()},type=${symEntry.getSymbol().getType().getName()})` : 'no-sym';
-        process.stderr.write(`[buildLocaltypes] stack16 addr=${vn.getAddr().printRaw()} tempType=${ct.getName()}(meta=${ct.getMetatype()}) ${symInfo}\n`);
-      }
       vn.setTempType(ct);
     }
   }
@@ -5580,9 +5617,6 @@ export class ActionInferTypes extends Action {
     let ct: Datatype = vn.getTempType();
     if (ct.getMetatype() !== type_metatype.TYPE_PTR) return;
     ct = (ct as TypePointer).getPtrTo();
-    if ((globalThis as any).__DEBUG_PROPAGATE__) {
-      process.stderr.write(`[propagateRef] addr=${addr.printRaw()} ptrTo=${ct.getName()}(meta=${ct.getMetatype()},size=${ct.getSize()})\n`);
-    }
     if (ct.getMetatype() === type_metatype.TYPE_SPACEBASE) return;
     if (ct.getMetatype() === type_metatype.TYPE_UNKNOWN) return;	// Don't bother propagating this
     const off: bigint = addr.getOffset();

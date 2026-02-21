@@ -666,8 +666,9 @@ export class FunctionModifier extends TypeModifier {
     }
 
     proto.intypes = this.getInTypes(glb);
+    proto.innames = this.getInNames();
     proto.model = decl.getModel(glb);
-    return glb.types.getTypeCode(proto);
+    return glb.types.getTypeCodeFromProto(proto);
   }
 }
 

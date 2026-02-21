@@ -780,7 +780,11 @@ export class Heritage {
       }
 
       const offset = vn.overlapAddr(addr, size);
+      // C++ uses list iterators which remain stable after removal of other elements.
+      // In TS we use array indices, so removing op shifts indices after opPos down by 1.
+      const opPos = op.getBasicIter();
       this.fd.opUninsert(op);
+      if (opPos < pos) pos--;  // Adjust for index shift after removal
       newInputs.length = 0;
       const big: Varnode = this.fd.newVarnode(size, addr);
       big.setActiveHeritage();
@@ -1687,7 +1691,12 @@ export class Heritage {
       const vn: Varnode = iter.get();
       iter.next();
       if (vn.getSpace() !== joinspace) break; // New varnodes may get inserted before enditer
-      const joinrec: JoinRecord = this.fd.getArch().findJoin(vn.getOffset());
+      let joinrec: JoinRecord;
+      try {
+        joinrec = this.fd.getArch().findJoin(vn.getOffset());
+      } catch(e: any) {
+        break;
+      }
       const piecespace: AddrSpace = joinrec.getPiece(0).space;
 
       if (joinrec.getUnified().size !== vn.getSize())

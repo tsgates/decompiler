@@ -122,9 +122,33 @@ export class IopSpace extends AddrSpace {
   }
 
   override printRaw(offset: uintb): string {
-    // In C++ this casts the offset to a PcodeOp* and prints info.
-    // In TypeScript we cannot do that, so we just print the offset.
-    return `iop_${offset.toString(16)}`;
+    // Resolve the PcodeOp from the registry (mirrors C++ pointer cast)
+    const op = PcodeOp.getOpFromConst(new Address(this, offset));
+    if (op === null) {
+      return `iop_${offset.toString(16)}`;
+    }
+
+    if (!op.isBranch()) {
+      // For CPUI_INDIRECT: print the indirecting op's SeqNum
+      return op.getSeqNum().toString();
+    }
+
+    // For branch targets: print the target block's start address
+    const bs = op.getParent();
+    if (bs === null) {
+      return `iop_${offset.toString(16)}`;
+    }
+    let bl: any;
+    if (bs.sizeOut() === 2) {
+      bl = op.isFallthruTrue() ? bs.getOut(0) : bs.getOut(1);
+    } else {
+      bl = bs.getOut(0);
+    }
+    if (bl === null) {
+      return `iop_${offset.toString(16)}`;
+    }
+    const startAddr: Address = bl.getStart();
+    return `code_${startAddr.getShortcut()}${startAddr.printRaw()}`;
   }
 
   override decode(_decoder: Decoder): void {
@@ -1304,7 +1328,10 @@ export class PieceNode {
         const op: PcodeOp = current.descend[idx];
         if (op.code() !== OpCode.CPUI_PIECE) continue;
         const sl = op.getSlot(current);
-        let addr = op.getOut()!.getAddr();
+        // In C++, Address is a value type and this line creates a copy.
+        // In TypeScript, getAddr() returns a reference, so we must explicitly copy
+        // to avoid mutating the output varnode's address via renormalize().
+        let addr = new Address(op.getOut()!.getAddr());
         if (addr.getSpace()!.isBigEndian() === (sl === 1))
           addr = addr.add(BigInt(op.getIn(1 - sl)!.getSize()));
         addr.renormalize(current.getSize());
@@ -1371,6 +1398,8 @@ export class PcodeOpBank {
   private optree: Map<string, PcodeOp> = new Map();
   /** Sorted keys array for ordered iteration */
   private optreeKeys: string[] = [];
+  /** Cached sorted view of ops from optree; invalidated on tree changes */
+  private optreeViewCache: PcodeOp[] | null = null;
   /** List of dead PcodeOps */
   private deadlist: PcodeOp[] = [];
   /** List of alive PcodeOps */
@@ -1468,6 +1497,7 @@ export class PcodeOpBank {
       else hi = mid;
     }
     this.optreeKeys.splice(lo, 0, key);
+    this.optreeViewCache = null;
   }
 
   /** Remove a key from optreeKeys */
@@ -1482,6 +1512,7 @@ export class PcodeOpBank {
     if (lo < this.optreeKeys.length && this.optreeKeys[lo] === key) {
       this.optreeKeys.splice(lo, 1);
     }
+    this.optreeViewCache = null;
   }
 
   // ---- Public methods ----
@@ -1490,6 +1521,7 @@ export class PcodeOpBank {
   clear(): void {
     this.optree.clear();
     this.optreeKeys.length = 0;
+    this.optreeViewCache = null;
     this.alivelist.length = 0;
     this.deadlist.length = 0;
     this.clearCodeLists();
@@ -1785,6 +1817,21 @@ export class PcodeOpBank {
 
   /** Get the alive list */
   getAliveList(): PcodeOp[] { return this.alivelist; }
+
+  /**
+   * Get a cached view of all ops in the optree, sorted by SeqNum.
+   * The returned array is shared; callers must not mutate it.
+   */
+  getOpTreeView(): PcodeOp[] {
+    if (this.optreeViewCache === null) {
+      const result: PcodeOp[] = new Array(this.optreeKeys.length);
+      for (let i = 0; i < this.optreeKeys.length; i++) {
+        result[i] = this.optree.get(this.optreeKeys[i])!;
+      }
+      this.optreeViewCache = result;
+    }
+    return this.optreeViewCache;
+  }
 
   /** Get the dead list */
   getDeadList(): PcodeOp[] { return this.deadlist; }

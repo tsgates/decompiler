@@ -607,7 +607,8 @@ export class Merge {
           if (overlaptype === 0) continue;
           if (overlaptype === 1) {
             const off: number = Number(vn.getOffset() - vn2.getOffset());
-            if (vn.partialCopyShadow(vn2, off))
+            const shadow = vn.partialCopyShadow(vn2, off);
+            if (shadow)
               continue;
           }
           if (boundtype === 2) {

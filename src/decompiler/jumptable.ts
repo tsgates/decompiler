@@ -778,7 +778,11 @@ export class GuardRecord {
     this.cbranch = bOp;
     this.readOp = rOp;
     this.indpath = path;
-    this.range = rng;
+    // In C++, CircleRange is a value type copied on assignment.
+    // In TypeScript, we must explicitly copy to avoid aliasing bugs
+    // where later pullBack mutations corrupt earlier guards' ranges.
+    this.range = new CircleRange();
+    this.range.copyFrom(rng);
     this.vn = v;
     const bitsPreservedRef = { val: 0 };
     this.baseVn = GuardRecord.quasiCopy(v, bitsPreservedRef);
@@ -1617,8 +1621,12 @@ class JumpBasic extends JumpModel {
         if (!(vn as any).isWritten()) break;
         const readOp = (vn as any).getDef();
         vn = rng.pullBack(readOp, markup, usenzmask);
-        if (vn === null) break;
-        if (rng.isEmpty()) break;
+        if (vn === null) {
+          break;
+        }
+        if (rng.isEmpty()) {
+          break;
+        }
         this.selectguards.push(new GuardRecord(cbranch, readOp, indpathstore, rng, vn));
       }
     }
@@ -2807,6 +2815,17 @@ export class JumpTable {
     this.partialTable = false;
   }
 
+  /**
+   * Override the address table with pre-recovered addresses.
+   * This is a TS-specific workaround for cases where the partial function
+   * analysis cannot recover the full switch table. The model and other
+   * state are preserved; only the address table is replaced.
+   */
+  overrideAddresses(addrs: Address[]): void {
+    this.addresstable = [...addrs];
+    this.partialTable = false;
+  }
+
   numEntries(): number {
     return this.addresstable.length;
   }
@@ -3192,6 +3211,7 @@ export class JumpTable {
     this.recoverModel(fd);
     if (this.jmodel !== null && this.jmodel.getTableSize() !== this.addresstable.length) {
       if ((this.addresstable.length === 1) && (this.jmodel.getTableSize() > 1)) {
+        // The jumptable was not fully recovered during flow analysis, try to issue a restart
         (fd as any).getOverride().insertMultistageJump(this.opaddress);
         (fd as any).setRestartPending(true);
         return;

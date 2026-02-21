@@ -43,7 +43,7 @@ type ActionGroupList = any;
 type LoadGuard = any;
 type FuncCallSpecs = any;
 type CPoolRecord = any;
-type TypeOpFloatInt2Float = any;
+import { TypeOpFloatInt2Float } from './typeop.js';
 type SegmentOp = any;
 declare const EquateSymbol: any;
 type TypeEnum = any;
@@ -6740,6 +6740,10 @@ export class RulePtrsubUndo extends Rule {
       outvn = curOp.getOut()!;
       curOp = outvn.loneDescend()!;
     }
+    // In C++, extra is int64_t and arithmetic truncates to 64 bits automatically.
+    // In TypeScript, BigInt has arbitrary precision, so we must mask to the varnode
+    // size before sign-extending to avoid overflow beyond 64 bits.
+    extra &= calc_mask(outvn.getSize());
     extra = sign_extend(extra, 8 * outvn.getSize() - 1);
     return extra;
   }
@@ -9375,7 +9379,7 @@ export class RuleUnsigned2Float extends Rule {
       if (addop.getIn(1)! !== outvn) continue;
       const zextop: PcodeOp = data.newOp(1, addop.getAddr());
       data.opSetOpcode(zextop, OpCode.CPUI_INT_ZEXT);
-      const zextout: Varnode = data.newUniqueOut((basevn.getSize() <= 4 ? 4 : 8), zextop);
+      const zextout: Varnode = data.newUniqueOut(TypeOpFloatInt2Float.preferredZextSize(basevn.getSize()), zextop);
       data.opSetOpcode(addop, OpCode.CPUI_FLOAT_INT2FLOAT);
       data.opRemoveInput(addop, 1);
       data.opSetInput(zextop, basevn, 0);
@@ -9447,7 +9451,7 @@ export class RuleInt2FloatCollapse extends Rule {
     data.opRemoveInput(multiop, 0);
     const newzext: PcodeOp = data.newOp(1, multiop.getAddr());
     data.opSetOpcode(newzext, OpCode.CPUI_INT_ZEXT);
-    const newout: Varnode = data.newUniqueOut((basevn.getSize() <= 4 ? 4 : 8), newzext);
+    const newout: Varnode = data.newUniqueOut(TypeOpFloatInt2Float.preferredZextSize(basevn.getSize()), newzext);
     data.opSetInput(newzext, basevn, 0);
     data.opSetInput(multiop, newout, 0);
     data.opInsertBegin(multiop, outbl);

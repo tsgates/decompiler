@@ -2221,7 +2221,7 @@ class RootPointer {
       const cvn: Varnode = addOp.getIn(1)!;
       if (!cvn.isConstant())
         return false;
-      off = Number(cvn.getOffset());
+      off = Number(BigInt.asIntN(32, cvn.getOffset()));
     }
     else if (opc === CPUI_COPY)
       off = 0;
@@ -2240,7 +2240,7 @@ class RootPointer {
     }
     this.ptrType = ct as TypePointer;
     if (opc === CPUI_PTRADD)
-      off *= Number(addOp.getIn(2)!.getOffset());
+      off *= Number(BigInt.asIntN(32, addOp.getIn(2)!.getOffset()));
     off = AddrSpace_addressToByteInt(off, this.ptrType.getWordSize());
     this.baseOffset += off;
     this.pointer = tmpPointer;
@@ -2336,7 +2336,9 @@ class SplitDatatype {
     let curType: Datatype | null = ct;
     let curOff: bigint = BigInt(offset);
     do {
-      curType = curType!.getSubType(curOff, { value: curOff });
+      const newoffRef = { val: curOff };
+      curType = curType!.getSubType(curOff, newoffRef);
+      curOff = newoffRef.val;
       if (curType === null) {
         let hole: number = ct.getHoleSize(offset);
         if (hole > 0) {
@@ -2480,15 +2482,19 @@ class SplitDatatype {
   // SplitDatatype.testCopyConstraints
   private testCopyConstraints(copyOp: PcodeOp): boolean {
     const inVn: Varnode = copyOp.getIn(0)!;
-    if (inVn.isInput()) return false;
+    if (inVn.isInput() && !inVn.isReadOnly()) {
+      return false;
+    }
     if (inVn.isAddrTied()) {
       const outVn: Varnode = copyOp.getOut()!;
-      if (outVn.isAddrTied() && outVn.getAddr().equals(inVn.getAddr()))
+      if (outVn.isAddrTied() && outVn.getAddr().equals(inVn.getAddr())) {
         return false;
+      }
     }
     else if (inVn.isWritten() && inVn.getDef()!.code() === CPUI_LOAD) {
-      if (inVn.loneDescend() === copyOp)
-        return false;		// This situation is handled by splitCopy()
+      if (inVn.loneDescend() === copyOp) {
+        return false;		// This situation is handled by splitLoad()
+      }
     }
     return true;
   }
@@ -2692,6 +2698,8 @@ class SplitDatatype {
           let finalOffset: bigint = curOff - newOff;
           const sz: number = newType.getSize();		// Element size in bytes
           finalOffset = finalOffset / BigInt(sz);		// Number of elements
+          // Convert to unsigned representation for the pointer size (matching C++ implicit int8->uintb cast)
+          finalOffset = BigInt.asUintN(inPtr.getSize() * 8, finalOffset);
           const szAddr: number = AddrSpace_byteToAddressInt(sz, ptrType.getWordSize());
           newOp = this.data.newOp(3, followOp.getAddr());
           this.data.opSetOpcode(newOp, CPUI_PTRADD);
@@ -2703,7 +2711,9 @@ class SplitDatatype {
           indexVn.updateType(indexType);
         }
         else {
-          const finalOffset: bigint = BigInt(AddrSpace_byteToAddressInt(Number(curOff - newOff), ptrType.getWordSize()));
+          let finalOffset: bigint = BigInt(AddrSpace_byteToAddressInt(Number(curOff - newOff), ptrType.getWordSize()));
+          // Convert to unsigned representation for the pointer size (matching C++ implicit int8->uintb cast)
+          finalOffset = BigInt.asUintN(inPtr.getSize() * 8, finalOffset);
           newOp = this.data.newOp(2, followOp.getAddr());
           this.data.opSetOpcode(newOp, CPUI_PTRSUB);
           this.data.opSetInput(newOp, inPtr, 0);
@@ -2742,7 +2752,20 @@ class SplitDatatype {
     if (!this.testCopyConstraints(copyOp))
       return false;
     const inVn: Varnode = copyOp.getIn(0)!;
-    if (!this.testDatatypeCompatibility(inType, outType, inVn.isConstant()))
+    // Detect if input is effectively a constant (true constant, or PIECE/ZEXT of constants)
+    let inConstant: boolean = inVn.isConstant();
+    if (!inConstant && inVn.isWritten()) {
+      const defOp: PcodeOp = inVn.getDef()!;
+      const defOpc = defOp.code();
+      if (defOpc === CPUI_PIECE) {
+        if (defOp.getIn(0)!.isConstant() && defOp.getIn(1)!.isConstant())
+          inConstant = true;
+      } else if (defOpc === CPUI_INT_ZEXT) {
+        if (defOp.getIn(0)!.isConstant())
+          inConstant = true;
+      }
+    }
+    if (!this.testDatatypeCompatibility(inType, outType, inConstant))
       return false;
     if (SplitDatatype.isArithmeticOutput(inVn))		// Sanity check on input
       return false;
@@ -2841,12 +2864,14 @@ class SplitDatatype {
         return false;
     }
 
-    if (SplitDatatype.isArithmeticOutput(inVn))		// Sanity check
+    if (SplitDatatype.isArithmeticOutput(inVn)) {		// Sanity check
       return false;
+    }
 
     const storeRoot = new RootPointer();
-    if (!storeRoot.find(storeOp, outType))
+    if (!storeRoot.find(storeOp, outType)) {
       return false;
+    }
 
     const loadRoot = new RootPointer();
     if (loadOp !== null) {
@@ -2929,8 +2954,9 @@ class SplitDatatype {
         }
       }
     }
-    else if (metain === TYPE_STRUCT || metain === TYPE_ARRAY)
+    else if (metain === TYPE_STRUCT || metain === TYPE_ARRAY) {
       return tlst.getExactPiece(resType, baseOffset, size);
+    }
     return null;
   }
 }
@@ -2956,13 +2982,6 @@ export class RuleSplitCopy extends Rule {
     const outType: Datatype = op.getOut()!.getTypeDefFacing();
     const metain: type_metatype = inType.getMetatype();
     const metaout: type_metatype = outType.getMetatype();
-    if ((globalThis as any).__DEBUG_SPLITCOPY__ && op.getIn(0)!.getSize() > 8) {
-      const inName = inType.getName();
-      const outName = outType.getName();
-      const inBase = (metain === 7 && (inType as any).getBase) ? (inType as any).getBase().getName() : '?';
-      const outBase = (metaout === 7 && (outType as any).getBase) ? (outType as any).getBase().getName() : '?';
-      process.stderr.write(`[RuleSplitCopy] size=${op.getIn(0)!.getSize()} in=${inName}[base=${inBase}](meta=${metain}) out=${outName}[base=${outBase}](meta=${metaout}) inAddr=${op.getIn(0)!.getAddr().printRaw()} outAddr=${op.getOut()!.getAddr().printRaw()}\n`);
-    }
     if (metain !== TYPE_PARTIALSTRUCT && metaout !== TYPE_PARTIALSTRUCT &&
         metain !== TYPE_ARRAY && metaout !== TYPE_ARRAY &&
         metain !== TYPE_STRUCT && metaout !== TYPE_STRUCT)

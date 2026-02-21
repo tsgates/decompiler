@@ -442,7 +442,10 @@ export class IfaceDecompData extends IfaceData {
     if (resolved.scope === null) {
       throw new IfaceParseError('Bad namespace for symbol: ' + name);
     }
-    resolved.scope.queryByName(resolved.basename, res);
+    const found = resolved.scope.queryByName(resolved.basename);
+    for (const sym of found) {
+      res.push(sym);
+    }
     return res;
   }
 }

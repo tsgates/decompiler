@@ -893,7 +893,7 @@ export class TypeOpCallother extends TypeOp {
     const bb = op.getParent();
     if (bb !== null) {
       const glb = bb.getFuncdata().getArch();
-      const index = op.getIn(0).getOffset();
+      const index = Number(op.getIn(0).getOffset());
       const userop = glb.userops.getOp(index);
       if (userop !== null)
         return userop.getOperatorName(op);

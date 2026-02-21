@@ -1651,8 +1651,20 @@ export class BlockGoto extends FlowBlock {
   // but is declared before BlockGraph in this file)
   list: FlowBlock[] = [];
 
+  override subBlock(i: int4): FlowBlock | null {
+    return this.list[i];
+  }
+
   addBlock(bl: FlowBlock): void {
-    (bl as any).index = this.list.length;
+    const min = bl.getIndex();
+    if (this.list.length === 0) {
+      (this as any).index = min;
+    } else {
+      if (min < this.getIndex()) {
+        (this as any).index = min;
+      }
+    }
+    (bl as any).parent = this;
     this.list.push(bl);
   }
 
@@ -3691,7 +3703,11 @@ export class BlockSwitch extends BlockGraph {
    * Add a new case to this switch.
    */
   private addCase(switchbl: FlowBlock, bl: FlowBlock, gt: number): void {
-    const basicbl = bl.getFrontLeaf()!.subBlock(0)!;
+    const frontLeaf = bl.getFrontLeaf();
+    if (frontLeaf === null) {
+      throw new LowlevelError("Case block front leaf is null in switch");
+    }
+    const basicbl = frontLeaf.subBlock(0)!;
     const inindex = basicbl.getInIndex(switchbl);
     if (inindex === -1) {
       throw new LowlevelError("Case block has become detached from switch");

@@ -610,32 +610,49 @@ export class FloatFormat {
     return (type === FloatClass.nan) ? 1n : 0n;
   }
 
+  /**
+   * Force newly-created NaN results to negative NaN (matching x86 C++ behavior).
+   * JavaScript's 0/0 produces positive NaN, but x86 produces negative NaN (sign bit set).
+   * If the result is NaN and neither input was NaN, set the sign bit.
+   */
+  private forceNegativeNaN(result: uintb, val1: number, val2: number): uintb {
+    if (isNaN(val1) || isNaN(val2)) return result; // Input was already NaN, don't modify
+    // Check if result is NaN by examining the encoding
+    const expCode = this.extractExponentCode(result);
+    const fracCode = this.extractFractionalCode(result);
+    if (expCode === this.maxexponent && fracCode !== 0n) {
+      // Result is NaN - force sign bit on (negative NaN)
+      result = result | (1n << BigInt(this.signbit_pos));
+    }
+    return result;
+  }
+
   /** Addition (+) */
   opAdd(a: uintb, b: uintb): uintb {
     const { value: val1 } = this.getHostFloat(a);
     const { value: val2 } = this.getHostFloat(b);
-    return this.getEncoding(val1 + val2);
+    return this.forceNegativeNaN(this.getEncoding(val1 + val2), val1, val2);
   }
 
   /** Division (/) */
   opDiv(a: uintb, b: uintb): uintb {
     const { value: val1 } = this.getHostFloat(a);
     const { value: val2 } = this.getHostFloat(b);
-    return this.getEncoding(val1 / val2);
+    return this.forceNegativeNaN(this.getEncoding(val1 / val2), val1, val2);
   }
 
   /** Multiplication (*) */
   opMult(a: uintb, b: uintb): uintb {
     const { value: val1 } = this.getHostFloat(a);
     const { value: val2 } = this.getHostFloat(b);
-    return this.getEncoding(val1 * val2);
+    return this.forceNegativeNaN(this.getEncoding(val1 * val2), val1, val2);
   }
 
   /** Subtraction (-) */
   opSub(a: uintb, b: uintb): uintb {
     const { value: val1 } = this.getHostFloat(a);
     const { value: val2 } = this.getHostFloat(b);
-    return this.getEncoding(val1 - val2);
+    return this.forceNegativeNaN(this.getEncoding(val1 - val2), val1, val2);
   }
 
   /** Unary negate */

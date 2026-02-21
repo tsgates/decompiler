@@ -11,6 +11,7 @@ import type { int4, uint4, int2, uint2, uintb } from '../core/types.js';
 import { LowlevelError } from '../core/error.js';
 import { Address, Range, RangeList, calc_mask, sign_extend } from '../core/address.js';
 import { AddrSpace } from '../core/space.js';
+import { SPACE_END_SENTINEL } from '../core/translate.js';
 import { PartMap } from '../core/partmap.js';
 import type { Writer } from '../util/writer.js';
 import { StringWriter } from '../util/writer.js';
@@ -3846,18 +3847,42 @@ export class Database {
   }
 
   /**
+   * Compute the "open" end address for a range (one past the last address).
+   * Handles the case where the range covers the end of an address space by
+   * jumping to the beginning of the next space in order.
+   * Returns null if the range extends to the end of the last address space.
+   *
+   * Matches C++ Range::getLastAddrOpen(const AddrSpaceManager *manage).
+   */
+  private getLastAddrOpen(range: Range): Address | null {
+    const curspc = range.getSpace();
+    const curlast = range.getLast();
+    if (curlast === curspc.getHighest()) {
+      const nextspc = this.glb.getNextSpaceInOrder(curspc);
+      if (nextspc === null || nextspc === SPACE_END_SENTINEL) return null;
+      return new Address(nextspc, 0n);
+    }
+    return new Address(curspc, curlast + 1n);
+  }
+
+  /**
    * Set boolean properties over a given memory range.
    */
   setPropertyRange(flags: number, range: Range): void {
     const addr1 = new Address(range.getSpace(), range.getFirst());
-    const addr2 = new Address(range.getSpace(), range.getLast());
-    this.flagbase.split(addr2.add(1n));
+    const addr2 = this.getLastAddrOpen(range);
     this.flagbase.split(addr1);
-    // OR flags into all entries in [addr1, addr2]
-    for (let idx = this.flagbase.beginIndex(addr1); idx < this.flagbase.endIndex(); idx++) {
-      const key = this.flagbase.getKeyAt(idx);
-      if (key.getSpace() !== range.getSpace() || key.getOffset() > range.getLast()) break;
+    let endIdx: number;
+    if (addr2 !== null) {
+      this.flagbase.split(addr2);
+      endIdx = this.flagbase.beginIndex(addr2);
+    } else {
+      endIdx = this.flagbase.endIndex();
+    }
+    // OR flags into all entries in [addr1, addr2)
+    for (let idx = this.flagbase.beginIndex(addr1); idx < endIdx; idx++) {
       const oldVal = this.flagbase.getValueAt(idx);
+      const key = this.flagbase.getKeyAt(idx);
       this.flagbase.splitAndSet(key, oldVal | flags);
     }
   }
@@ -3867,14 +3892,19 @@ export class Database {
    */
   clearPropertyRange(flags: number, range: Range): void {
     const addr1 = new Address(range.getSpace(), range.getFirst());
-    const addr2 = new Address(range.getSpace(), range.getLast());
-    this.flagbase.split(addr2.add(1n));
+    const addr2 = this.getLastAddrOpen(range);
     this.flagbase.split(addr1);
-    // Clear flags from all entries in [addr1, addr2]
-    for (let idx = this.flagbase.beginIndex(addr1); idx < this.flagbase.endIndex(); idx++) {
-      const key = this.flagbase.getKeyAt(idx);
-      if (key.getSpace() !== range.getSpace() || key.getOffset() > range.getLast()) break;
+    let endIdx: number;
+    if (addr2 !== null) {
+      this.flagbase.split(addr2);
+      endIdx = this.flagbase.beginIndex(addr2);
+    } else {
+      endIdx = this.flagbase.endIndex();
+    }
+    // Clear flags from all entries in [addr1, addr2)
+    for (let idx = this.flagbase.beginIndex(addr1); idx < endIdx; idx++) {
       const oldVal = this.flagbase.getValueAt(idx);
+      const key = this.flagbase.getKeyAt(idx);
       this.flagbase.splitAndSet(key, oldVal & ~flags);
     }
   }

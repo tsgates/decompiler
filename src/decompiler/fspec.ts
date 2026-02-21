@@ -27,6 +27,7 @@ import { VarnodeData } from '../core/pcoderaw.js';
 import {
   Datatype, type_metatype,
   type_class, string2typeclass, metatype2typeclass,
+  registerFuncProtoClass,
 } from './type.js';
 import { ELEM_PCODE, ELEM_INJECT } from './pcodeinject.js';
 import { ELEM_ADDR } from './varnode.js';
@@ -3596,6 +3597,13 @@ type AliasChecker = any;
 type AncestorRealistic = any;
 type InjectPayload = any;
 
+// AncestorRealistic constructor reference for use in finalInputCheck.
+// Set by funcdata.ts to break circular dependency.
+let _AncestorRealisticCtor: (new () => { execute(op: any, slot: number, t: ParamTrial, allowFail: boolean): boolean }) | null = null;
+export function registerAncestorRealisticCtor(ctor: any): void {
+  _AncestorRealisticCtor = ctor;
+}
+
 // ---------------------------------------------------------------------------
 // ProtoStoreSymbol
 // ---------------------------------------------------------------------------
@@ -5108,6 +5116,9 @@ export class FuncProto {
   }
 }
 
+// Register the real FuncProto constructor with type.ts to resolve circular dependency
+registerFuncProtoClass(FuncProto);
+
 // ---------------------------------------------------------------------------
 // FuncCallSpecs
 // ---------------------------------------------------------------------------
@@ -5680,13 +5691,15 @@ export class FuncCallSpecs extends FuncProto {
   }
 
   finalInputCheck(): void {
-    // AncestorRealistic is used to re-check trials affected by conditional execution
+    if (_AncestorRealisticCtor === null) return;
+    const ancestorReal = new _AncestorRealisticCtor();
     for (let i = 0; i < this.activeinput.getNumTrials(); ++i) {
       const trial = this.activeinput.getTrial(i);
       if (!trial.isActive()) continue;
       if (!trial.hasCondExeEffect()) continue;
-      // In the full implementation, AncestorRealistic.execute() would be called here
-      // trial.markNoUse() if check fails
+      const slot = trial.getSlot();
+      if (!ancestorReal.execute(this.op, slot, trial, false))
+        trial.markNoUse();
     }
   }
 
@@ -5706,6 +5719,7 @@ export class FuncCallSpecs extends FuncProto {
       }
     }
 
+    const ancestorReal = _AncestorRealisticCtor ? new _AncestorRealisticCtor() : null;
     for (let i = 0; i < this.activeinput.getNumTrials(); ++i) {
       const trial = this.activeinput.getTrial(i);
       if (trial.isChecked()) continue;
@@ -5722,19 +5736,25 @@ export class FuncCallSpecs extends FuncProto {
           else
             trial.markNoUse();
         }
-        else {
-          // AncestorRealistic check would happen here
+        else if (ancestorReal !== null && ancestorReal.execute(this.op, slot, trial, false)) {
           if ((data as any).ancestorOpUse(maxancestor, vn, this.op, trial, 0, 0))
             trial.markActive();
           else
             trial.markInactive();
         }
+        else {
+          trial.markNoUse();
+        }
       } else {
         // Non-stack parameter trial check
-        if ((data as any).ancestorOpUse(maxancestor, vn, this.op, trial, 0, 0)) {
-          trial.markActive();
-          if (trial.hasCondExeEffect())
-            this.activeinput.markNeedsFinalCheck();
+        if (ancestorReal !== null && ancestorReal.execute(this.op, slot, trial, true)) {
+          if ((data as any).ancestorOpUse(maxancestor, vn, this.op, trial, 0, 0)) {
+            trial.markActive();
+            if (trial.hasCondExeEffect())
+              this.activeinput.markNeedsFinalCheck();
+          }
+          else
+            trial.markInactive();
         }
         else if ((vn as any).isInput())
           trial.markInactive();
