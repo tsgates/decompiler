@@ -307,6 +307,77 @@ class RuleHumptyOr extends Rule {
     if (!grouplist.contains(this.getGroup())) return null;
     return new RuleHumptyOr(this.getGroup());
   }
+
+  getOpList(oplist: number[]): void {
+    oplist.push(OpCode.CPUI_INT_OR);
+  }
+
+  applyOp(op: PcodeOp, data: Funcdata): number {
+    let vn1: Varnode = op.getIn(0)!;
+    if (!vn1.isWritten()) return 0;
+    let vn2: Varnode = op.getIn(1)!;
+    if (!vn2.isWritten()) return 0;
+    const and1: PcodeOp = vn1.getDef()!;
+    if (and1.code() !== OpCode.CPUI_INT_AND) return 0;
+    const and2: PcodeOp = vn2.getDef()!;
+    if (and2.code() !== OpCode.CPUI_INT_AND) return 0;
+    let a: Varnode = and1.getIn(0)!;
+    let b: Varnode = and1.getIn(1)!;
+    let c: Varnode = and2.getIn(0)!;
+    let d: Varnode = and2.getIn(1)!;
+    if (a === c) {
+      c = d;          // non-matching are b and d(=c)
+    }
+    else if (a === d) {
+      // non-matching are b and c
+    }
+    else if (b === c) {
+      b = a;
+      a = c;
+      c = d;
+    }
+    else if (b === d) {
+      b = a;
+      a = d;
+    }
+    else {
+      return 0;
+    }
+    // a matches across both ANDs, b and c are the respective other params
+    if (b.isConstant() && c.isConstant()) {
+      const totalbits: bigint = b.getOffset() | c.getOffset();
+      if (totalbits === calc_mask(a.getSize())) {
+        // Between the two sides, we get all bits of a. Convert to COPY
+        data.opSetOpcode(op, OpCode.CPUI_COPY);
+        data.opRemoveInput(op, 1);
+        data.opSetInput(op, a, 0);
+      }
+      else {
+        // We get some bits, but not all. Convert to an AND
+        data.opSetOpcode(op, OpCode.CPUI_INT_AND);
+        data.opSetInput(op, a, 0);
+        const newconst: Varnode = data.newConstant(a.getSize(), totalbits);
+        data.opSetInput(op, newconst, 1);
+      }
+    }
+    else {
+      if (!b.isHeritageKnown()) return 0;
+      if (!c.isHeritageKnown()) return 0;
+      const aMask: bigint = a.getNZMask();
+      if ((b.getNZMask() & aMask) === 0n) return 0;  // RuleAndDistribute would reverse us
+      if ((c.getNZMask() & aMask) === 0n) return 0;
+      const newOrOp: PcodeOp = data.newOp(2, op.getAddr());
+      data.opSetOpcode(newOrOp, OpCode.CPUI_INT_OR);
+      const orVn: Varnode = data.newUniqueOut(a.getSize(), newOrOp);
+      data.opSetInput(newOrOp, b, 0);
+      data.opSetInput(newOrOp, c, 1);
+      data.opInsertBefore(newOrOp, op);
+      data.opSetInput(op, a, 0);
+      data.opSetInput(op, orVn, 1);
+      data.opSetOpcode(op, OpCode.CPUI_INT_AND);
+    }
+    return 1;
+  }
 }
 
 class RuleSwitchSingle extends Rule {
