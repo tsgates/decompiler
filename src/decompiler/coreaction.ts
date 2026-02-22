@@ -315,6 +315,52 @@ class RuleSwitchSingle extends Rule {
     if (!grouplist.contains(this.getGroup())) return null;
     return new RuleSwitchSingle(this.getGroup());
   }
+
+  getOpList(oplist: number[]): void {
+    oplist.push(OpCode.CPUI_BRANCHIND);
+  }
+
+  applyOp(op: PcodeOp, data: Funcdata): number {
+    const bb: BlockBasic = op.getParent() as BlockBasic;
+    if (bb.sizeOut() !== 1) return 0;
+
+    const jt: JumpTable | null = data.findJumpTable(op);
+    if (jt === null) return 0;
+    if (jt.numEntries() === 0) return 0;
+    if (!jt.isLabelled()) return 0;
+    const addr: Address = jt.getAddressByIndex(0);
+    let needwarning = false;
+    let allcasesmatch = false;
+    if (jt.numEntries() !== 1) {
+      needwarning = true;
+      allcasesmatch = true;
+      for (let i = 1; i < jt.numEntries(); ++i) {
+        if (!jt.getAddressByIndex(i).equals(addr)) {
+          allcasesmatch = false;
+          break;
+        }
+      }
+    }
+
+    if (!op.getIn(0)!.isConstant())
+      needwarning = true;
+
+    if (needwarning) {
+      let s = "Switch with 1 destination removed at ";
+      s += op.getAddr().printRaw();
+      if (allcasesmatch) {
+        s += " : " + jt.numEntries() + " cases all go to same destination";
+      }
+      data.warningHeader(s);
+    }
+
+    // Convert the BRANCHIND to just a branch
+    data.opSetOpcode(op, OpCode.CPUI_BRANCH);
+    data.opSetInput(op, data.newCodeRef(addr), 0);
+    data.removeJumpTable(jt);
+    data.getStructure().clear();
+    return 1;
+  }
 }
 
 class RuleCondNegate extends Rule {

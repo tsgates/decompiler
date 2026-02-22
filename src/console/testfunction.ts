@@ -424,14 +424,14 @@ export class FunctionTestCollection {
     mainloop(this.console);
     this.console.optr = origStream;
     this.console.fileoptr = origStream;
+    const result = bulkout.toString();
+    this.lastOutput = result;
     if (this.console.isInError()) {
       this.console.optr.write('Error: Did not apply tests in ' + this.fileName + '\n');
       this.console.optr.write(midBuffer.toString() + '\n');
       lateStream.push('Execution failed for ' + this.fileName);
       return;
     }
-    const result = bulkout.toString();
-    this.lastOutput = result;
     if ((globalThis as any).__DUMP_OUTPUT__) {
       process.stderr.write('=== DECOMPILER OUTPUT for ' + this.fileName + ' ===\n' + result + '\n=== END ===\n');
     }
