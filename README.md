@@ -17,6 +17,142 @@ src/
 
 The decompiler loads `.sla` / `.pspec` / `.cspec` files from a standard Ghidra installation at runtime via SLEIGH, making it architecture-agnostic — x86, ARM, AARCH64, MIPS, 8051, and others are all supported.
 
+### Decompilation Pipeline
+
+The pipeline is driven by an **action tree** — nested, iterating groups of transformations
+applied to a `Funcdata` object until convergence. Defined in `coreaction.ts:universalAction()`.
+
+```
+                        ┌─────────────────────────────┐
+                        │       Machine Code           │
+                        │  (x86, ARM, MIPS, ...)       │
+                        └──────────────┬──────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────┐
+                    │          SLEIGH Translator           │
+                    │  sleigh.ts — .sla processor specs    │
+                    │  Lifts machine code → P-code IR      │
+                    └──────────────────┬──────────────────┘
+                                       │
+                              PcodeOp[] + BlockBasic[]
+                                       │
+  ┌────────────────────────────────────▼────────────────────────────────────┐
+  │                     universal (ActionRestartGroup)                       │
+  │                                                                         │
+  │  ┌─ SETUP ──────────────────────────────────────────────────────────┐   │
+  │  │  ActionStart ─────── Gather raw P-code from binary (flow.ts)     │   │
+  │  │  ActionConstbase ─── Mark constant varnodes                      │   │
+  │  │  ActionDefaultParams  ActionExtraPopSetup                        │   │
+  │  │  ActionPrototypeTypes ── Recover function prototypes (fspec.ts)  │   │
+  │  │  ActionFuncLink ──── Link call sites to prototypes               │   │
+  │  └─────────────────────────────────────────────────────────────────┘   │
+  │                               │                                         │
+  │  ┌─ fullloop (repeats until no changes) ───────────────────────────┐   │
+  │  │                                                                  │   │
+  │  │  ┌─ mainloop (repeats until no changes) ─────────────────────┐  │   │
+  │  │  │                                                            │  │   │
+  │  │  │  ActionHeritage ──── Build SSA form (heritage.ts)          │  │   │
+  │  │  │    phi-functions, def-use chains, dominance frontiers      │  │   │
+  │  │  │                                                            │  │   │
+  │  │  │  ActionDeadCode ──── Remove dead code                      │  │   │
+  │  │  │  ActionInferTypes ── Data-flow type recovery (type.ts)     │  │   │
+  │  │  │                                                            │  │   │
+  │  │  │  ┌─ stackstall (repeats) ─────────────────────────────┐   │  │   │
+  │  │  │  │                                                     │   │  │   │
+  │  │  │  │  oppool1 (ActionPool — ~100 rules, repeats)         │   │  │   │
+  │  │  │  │  ┌───────────────────────────────────────────────┐  │   │  │   │
+  │  │  │  │  │  Simplification     Arithmetic    Boolean     │  │   │  │   │
+  │  │  │  │  │  RulePropagateCopy  RuleSub2Add   RuleBoolZext│  │   │  │   │
+  │  │  │  │  │  RuleCollectTerms   RuleDivOpt    RuleLogic2B │  │   │  │   │
+  │  │  │  │  │  RuleMultiCollapse  RuleShift2Mul RuleCondMove│  │   │  │   │
+  │  │  │  │  │                                               │  │   │  │   │
+  │  │  │  │  │  Bit operations     Comparisons   Extensions  │  │   │  │   │
+  │  │  │  │  │  RuleAndMask        RuleEqual2Z   RuleZextElim│  │   │  │   │
+  │  │  │  │  │  RuleOrCollapse     RuleLessEqual RuleSextElim│  │   │  │   │
+  │  │  │  │  │  RuleShiftBitops    RuleThreeWay  RulePtrFlow │  │   │  │   │
+  │  │  │  │  │                                               │  │   │  │   │
+  │  │  │  │  │  Float ops          Subvar/Split  Control     │  │   │  │   │
+  │  │  │  │  │  RuleFloatCast      RuleSplitFlow RuleSwitchSi│  │   │  │   │
+  │  │  │  │  │  RuleInt2FloatCol   RuleSubvarAnd RuleCondNeg │  │   │  │   │
+  │  │  │  │  │  + CPU-specific rules from Architecture       │  │   │  │   │
+  │  │  │  │  └───────────────────────────────────────────────┘  │   │  │   │
+  │  │  │  │                                                     │   │  │   │
+  │  │  │  │  ActionDeindirect ── Resolve indirect calls         │   │  │   │
+  │  │  │  │  ActionStackPtrFlow ── Stack pointer dataflow       │   │  │   │
+  │  │  │  └─────────────────────────────────────────────────────┘   │  │   │
+  │  │  │                                                            │  │   │
+  │  │  │  ActionBlockStructure ── Build control flow hierarchy      │  │   │
+  │  │  │    if/else, while, for, do-while, switch (blockaction.ts)  │  │   │
+  │  │  │                                                            │  │   │
+  │  │  │  oppool2 (ActionPool — type-driven rules, repeats)         │  │   │
+  │  │  │    RulePushPtr, RuleStructOffset0, RulePtrArith            │  │   │
+  │  │  │    RuleLoadVarnode, RuleStoreVarnode                       │  │   │
+  │  │  │                                                            │  │   │
+  │  │  │  ActionConditionalExe ── Conditional execution (condexe.ts)│  │   │
+  │  │  └────────────────────────────────────────────────────────────┘  │   │
+  │  │                                                                  │   │
+  │  │  ActionSwitchNorm ──── Normalize switch tables (jumptable.ts)    │   │
+  │  │  ActionReturnSplit ─── Split return values                       │   │
+  │  │  ActionStartTypes ──── Enable type recovery for next iteration   │   │
+  │  └──────────────────────────────────────────────────────────────────┘   │
+  │                               │                                         │
+  │  ┌─ CLEANUP ────────────────────────────────────────────────────────┐   │
+  │  │  cleanup (ActionPool — presentation rules, repeats)              │   │
+  │  │    RuleMultNegOne, RuleAddUnsigned, Rule2Comp2Sub                │   │
+  │  │    RuleExpandLoad, RulePieceStructure, RuleSplitCopy             │   │
+  │  │    RuleStringCopy, RuleStringStore                               │   │
+  │  └──────────────────────────────────────────────────────────────────┘   │
+  │                               │                                         │
+  │  ┌─ MERGE & NAME ──────────────────────────────────────────────────┐   │
+  │  │  ActionStructureTransform ── Final control flow transforms       │   │
+  │  │  ActionAssignHigh ────────── Create HighVariable containers      │   │
+  │  │  ActionMergeRequired ─────── Required varnode merges (merge.ts)  │   │
+  │  │  ActionMarkExplicit/Implied ── Classify variable visibility      │   │
+  │  │  ActionMergeCopy ─────────── Strategic varnode merging           │   │
+  │  │    Cover analysis: non-intersecting live ranges → one variable   │   │
+  │  │  ActionMergeAdjacent ─────── Adjacent range merging              │   │
+  │  │  ActionMergeType ─────────── Type-compatible merging             │   │
+  │  │  ActionNameVars ──────────── Assign human-readable names         │   │
+  │  │  ActionSetCasts ──────────── Insert type casts (cast.ts)         │   │
+  │  └──────────────────────────────────────────────────────────────────┘   │
+  │                               │                                         │
+  │  ActionFinalStructure ─── Last structural pass                          │
+  │  ActionStop ──────────── Finalize                                       │
+  └─────────────────────────────────────────────────────────────────────────┘
+                                       │
+                              Funcdata (fully analyzed)
+                              ├─ VarnodeBank (SSA varnodes)
+                              ├─ PcodeOpBank (simplified ops)
+                              ├─ BlockGraph (structured CFG)
+                              ├─ HighVariables (merged, named, typed)
+                              └─ TypeFactory (recovered types)
+                                       │
+                    ┌──────────────────▼──────────────────┐
+                    │         PrintC (printc.ts)           │
+                    │  Walks structured blocks + ops       │
+                    │  Emits C tokens with types & casts   │
+                    └──────────────────┬──────────────────┘
+                                       │
+                              Decompiled C output
+```
+
+### Key Data Structures
+
+| Structure | File | Role |
+|-----------|------|------|
+| `Funcdata` | funcdata.ts | Central container: holds all varnodes, ops, blocks, types for one function |
+| `PcodeOp` | op.ts | Single p-code operation (COPY, LOAD, INT_ADD, CALL, BRANCH, ...) |
+| `Varnode` | varnode.ts | Single SSA value: register, stack slot, constant, or unique temporary |
+| `HighVariable` | variable.ts | Merged group of varnodes = one source-level variable |
+| `BlockBasic` | block.ts | Basic block of sequential p-code ops |
+| `BlockGraph` | block.ts | Hierarchical CFG: if/while/switch composed of sub-blocks |
+| `Datatype` | type.ts | Recovered type: int, pointer, struct, array, enum, ... |
+| `Heritage` | heritage.ts | SSA builder: dominance frontiers, phi-node insertion, renaming |
+| `Merge` | merge.ts | Cover-based varnode merging into HighVariables |
+| `JumpTable` | jumptable.ts | Recovered switch table: maps values to block destinations |
+| `Action` | action.ts | Base class for pipeline phases; ActionGroup/ActionPool for composition |
+| `Rule` | action.ts | Single peephole transformation applied to matching PcodeOps |
+
 ## Prerequisites
 
 - Node.js >= 18
