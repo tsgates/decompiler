@@ -1573,7 +1573,7 @@ export class PrintC extends PrintLanguage {
   }
 
   protected genericFunctionName(addr: Address): string {
-    return "func_" + addr.getOffset().toString(16);
+    return "func_" + addr.printRaw();
   }
 
   protected genericTypeName(ct: Datatype): string {
@@ -2470,7 +2470,7 @@ export class PrintC extends PrintLanguage {
     else
       lb = "code_";
     lb += addr.getShortcut();
-    lb += addr.getOffset().toString(16);
+    lb += addr.printRaw();
     this.emit.tagLabel(lb, syntax_highlight.no_color, spc, off);
   }
 

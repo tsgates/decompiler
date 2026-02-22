@@ -690,7 +690,7 @@ export class Merge {
     if (ct.needsResolution()) {
       const fieldNum: number = this.data.inheritResolution(ct, copyop, -1, op, -1);
       this.data.forceFacingType(ct, fieldNum, copyop, 0);
-      if (ct.getMetatype() === 14 /* TYPE_PARTIALUNION */)
+      if (ct.getMetatype() === 0 /* TYPE_PARTIALUNION */)
         ct = vn.getTypeDefFacing();
     }
     const uniq: Varnode = this.data.newUnique(vn.getSize(), ct);
@@ -935,7 +935,7 @@ export class Merge {
         const fieldNum: number = resUnion === null ? -1 : resUnion.getFieldNum();
         this.data.forceFacingType(ct, fieldNum, domCopy, 0);
         this.data.forceFacingType(ct, fieldNum, domCopy, -1);
-        if (ct.getMetatype() === 14 /* TYPE_PARTIALUNION */)
+        if (ct.getMetatype() === 0 /* TYPE_PARTIALUNION */)
           ct = rootVn.getTypeReadFacing(oldCopy);
       }
       domVn = this.data.newUnique(rootVn.getSize(), ct);

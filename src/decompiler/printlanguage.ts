@@ -811,25 +811,62 @@ export abstract class PrintLanguage {
    */
   protected escapeCharacterData(s: Writer, buf: Uint8Array, count: int4, charsize: int4, bigend: boolean): boolean {
     let i = 0;
-    const skip = charsize;
+    let skip = charsize;
     let codepoint = 0;
     while (i < count) {
-      // In the C++ code this calls StringManager::getCodepoint.
-      // We use a simplified inline version here. The actual implementation would call
-      // StringManager.getCodepoint, but we avoid importing it to reduce coupling.
-      // For now, handle the simple single-byte case:
       if (charsize === 1) {
-        codepoint = buf[i];
+        // UTF-8 decoding (matches C++ StringManager::getCodepoint)
+        const val = buf[i];
+        if ((val & 0x80) === 0) {
+          codepoint = val;
+          skip = 1;
+        } else if ((val & 0xe0) === 0xc0) {
+          const val2 = buf[i + 1];
+          skip = 2;
+          if ((val2 & 0xc0) !== 0x80) { codepoint = -1; break; }
+          codepoint = ((val & 0x1f) << 6) | (val2 & 0x3f);
+        } else if ((val & 0xf0) === 0xe0) {
+          const val2 = buf[i + 1];
+          const val3 = buf[i + 2];
+          skip = 3;
+          if (((val2 & 0xc0) !== 0x80) || ((val3 & 0xc0) !== 0x80)) { codepoint = -1; break; }
+          codepoint = ((val & 0xf) << 12) | ((val2 & 0x3f) << 6) | (val3 & 0x3f);
+        } else if ((val & 0xf8) === 0xf0) {
+          const val2 = buf[i + 1];
+          const val3 = buf[i + 2];
+          const val4 = buf[i + 3];
+          skip = 4;
+          if (((val2 & 0xc0) !== 0x80) || ((val3 & 0xc0) !== 0x80) || ((val4 & 0xc0) !== 0x80)) { codepoint = -1; break; }
+          codepoint = ((val & 0x7) << 18) | ((val2 & 0x3f) << 12) | ((val3 & 0x3f) << 6) | (val4 & 0x3f);
+        } else {
+          codepoint = -1;
+          break;
+        }
       } else if (charsize === 2) {
         if (bigend)
           codepoint = (buf[i] << 8) | buf[i + 1];
         else
           codepoint = buf[i] | (buf[i + 1] << 8);
+        skip = 2;
+        if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
+          let trail: number;
+          if (bigend)
+            trail = (buf[i + 2] << 8) | buf[i + 3];
+          else
+            trail = buf[i + 2] | (buf[i + 3] << 8);
+          skip = 4;
+          if (trail < 0xDC00 || trail > 0xDFFF) { codepoint = -1; break; }
+          codepoint = (codepoint << 10) + trail + (0x10000 - (0xD800 << 10) - 0xDC00);
+        } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
+          codepoint = -1;
+          break;
+        }
       } else {
         if (bigend)
           codepoint = (buf[i] << 24) | (buf[i + 1] << 16) | (buf[i + 2] << 8) | buf[i + 3];
         else
           codepoint = buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24);
+        skip = 4;
       }
       if (codepoint === 0 || codepoint === -1) break;
       this.printUnicode(s, codepoint);

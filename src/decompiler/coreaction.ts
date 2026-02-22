@@ -4722,9 +4722,21 @@ export class ActionConditionalConst extends Action {
           hasFlowTogether = true;
       }
     }
-    // Add COPY assignment for each edge that has its own disconnected path going forward
+    // Build sorted index array for COPY placement: sort by MULTIEQUAL output address
+    // to ensure deterministic emit order matching C++ (which depends on descend-list order
+    // that may differ from TS due to implementation differences in list vs array containers)
+    const indices: number[] = [];
     for (let i = 0; i < phiNodeEdges.length; ++i) {
-      if (results[i] !== 1) continue;	// Check for disconnected path that does not flow into another path
+      if (results[i] === 1) indices.push(i);
+    }
+    indices.sort((a, b) => {
+      const addrA = phiNodeEdges[a].op.getOut()!.getAddr();
+      const addrB = phiNodeEdges[b].op.getOut()!.getAddr();
+      if (!addrA.equals(addrB)) return addrA.lessThan(addrB) ? -1 : 1;
+      return phiNodeEdges[a].slot - phiNodeEdges[b].slot;
+    });
+    // Add COPY assignment for each edge that has its own disconnected path going forward
+    for (const i of indices) {
       const op: PcodeOp = phiNodeEdges[i].op;
       const slot: number = phiNodeEdges[i].slot;
       const bl: BlockBasic = op.getParent().getIn(slot) as BlockBasic;
@@ -5554,6 +5566,8 @@ export class ActionInferTypes extends Action {
     let outvn: Varnode;
 
     invn = (inslot === -1) ? op.getOut()! : op.getIn(inslot)!;
+
+    // (debug removed)
     let alttype: Datatype = invn.getTempType();
     if (alttype.needsResolution()) {
       // Always give incoming data-type a chance to resolve, even if it would not otherwise propagate
@@ -5566,7 +5580,9 @@ export class ActionInferTypes extends Action {
       outvn = op.getIn(outslot)!;
       if (outvn.isAnnotation()) return false;
     }
-    if (outvn.isTypeLock()) return false;	// Can't propagate through typelock
+    if (outvn.isTypeLock()) {
+      return false;	// Can't propagate through typelock
+    }
     if (outvn.stopsUpPropagation() && outslot >= 0) return false;	// Propagation is blocked
 
     if (alttype.getMetatype() === type_metatype.TYPE_BOOL) {	// Only propagate boolean
@@ -5575,6 +5591,7 @@ export class ActionInferTypes extends Action {
     }
 
     const newtype: Datatype | null = op.getOpcode().propagateType(alttype, op, invn, outvn, inslot, outslot);
+
     if (newtype === null)
       return false;
 

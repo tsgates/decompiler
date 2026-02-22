@@ -1418,7 +1418,7 @@ export class Funcdata {
   /// Inject p-code from a payload into this live function.
   /// Raw PcodeOps are generated from the payload within a given basic block at a specific
   /// position in this function.
-  doLiveInject(payload: InjectPayload, addr: Address, bl: BlockBasic, pos: IterableIterator<PcodeOp>): void {
+  doLiveInject(payload: InjectPayload, addr: Address, bl: BlockBasic, pos: IteratorPosition): void {
     const emitter = new PcodeEmitFd();
     const context: InjectContext = this.glb.pcodeinjectlib.getCachedContext();
 
@@ -1439,6 +1439,7 @@ export class Funcdata {
         throw new Error('Illegal branching injection');
       }
       this.opInsert(op, bl, pos);
+      pos++;  // Advance past inserted op (TS array index, unlike C++ list iterator, doesn't auto-track)
     }
   }
 

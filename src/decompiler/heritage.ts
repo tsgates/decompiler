@@ -981,7 +981,7 @@ export class Heritage {
 
     if (insertop === null) {
       bl = this.fd.getBasicBlocks().getStartBlock() as BlockBasic;
-      insertiter = bl.beginOp();
+      insertiter = 0;  // beginOp() index
       opaddress = this.fd.getAddress();
     } else {
       bl = insertop.getParent();
@@ -1008,6 +1008,7 @@ export class Heritage {
         this.fd.opSetInput(newop, preexist, 1);
       }
       this.fd.opInsert(newop, bl, insertiter);
+      insertiter++;  // Advance past inserted op (TS array index, unlike C++ list iterator, doesn't auto-track)
       preexist = newvn;
     }
     return preexist;
@@ -1037,7 +1038,7 @@ export class Heritage {
 
     if (insertop === null) {
       bl = this.fd.getBasicBlocks().getStartBlock() as BlockBasic;
-      insertiter = bl.beginOp();
+      insertiter = 0;  // beginOp() index
       opaddress = this.fd.getAddress();
     } else {
       bl = insertop.getParent();
@@ -1059,6 +1060,7 @@ export class Heritage {
       this.fd.opSetInput(newop, this.fd.newConstant(4, diff), 1);
       this.fd.opSetOutput(newop, vn);
       this.fd.opInsert(newop, bl, insertiter);
+      insertiter++;  // Advance past inserted op (TS array index, unlike C++ list iterator, doesn't auto-track)
     }
   }
 

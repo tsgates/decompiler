@@ -1051,7 +1051,7 @@ export class FspecSpace extends AddrSpace {
   }
 
   override printRaw(offset: uintb): string {
-    return 'func_0x' + offset.toString(16);
+    return 'func_0x' + offset.toString(16).padStart(8, '0');
   }
 
   decode(decoder: Decoder): void {

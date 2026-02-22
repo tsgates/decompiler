@@ -78,7 +78,19 @@ export class FunctionTestProperty {
     this.minimumMatch = parseInt(el.getAttributeValue('min'), 10);
     this.maximumMatch = parseInt(el.getAttributeValue('max'), 10);
     let pos: number = 0;
-    const line: string = el.getContent();
+    // Re-encode Unicode codepoints as Latin-1 bytes, then decode as UTF-8.
+    // XML entities like &#xc2;&#xa3; produce individual Unicode codepoints (U+00C2, U+00A3)
+    // but the C++ decompiler output (and our TS output) writes proper UTF-8 decoded characters.
+    // In C++ everything is byte-level so regex matching works. In JS we need this conversion.
+    const rawContent: string = el.getContent();
+    let line: string;
+    const allLatin1 = [...rawContent].every(ch => ch.codePointAt(0)! <= 0xFF);
+    if (allLatin1) {
+      const bytes = new Uint8Array([...rawContent].map(ch => ch.codePointAt(0)!));
+      line = new TextDecoder('utf-8').decode(bytes);
+    } else {
+      line = rawContent;
+    }
     for (;;) {
       // Remove whitespace at front of pattern
       while (pos < line.length && (line[pos] === ' ' || line[pos] === '\t')) {
@@ -175,6 +187,7 @@ export class FunctionTestCollection {
   private consoleOwner: boolean;              // True if this object owns the console
   private numTestsApplied: number = 0;        // Count of tests that were executed
   private numTestsSucceeded: number = 0;      // Count of tests that passed
+  private lastOutput: string = '';            // Raw decompiled C output from last runTests()
 
   /**
    * Constructor.
@@ -210,6 +223,11 @@ export class FunctionTestCollection {
   /** Get the number of tests that passed. */
   getTestsSucceeded(): number {
     return this.numTestsSucceeded;
+  }
+
+  /** Get the raw decompiled C output from the last runTests() call. */
+  getLastOutput(): string {
+    return this.lastOutput;
   }
 
   /** Get the number of commands in the current script. */
@@ -413,6 +431,7 @@ export class FunctionTestCollection {
       return;
     }
     const result = bulkout.toString();
+    this.lastOutput = result;
     if ((globalThis as any).__DUMP_OUTPUT__) {
       process.stderr.write('=== DECOMPILER OUTPUT for ' + this.fileName + ' ===\n' + result + '\n=== END ===\n');
     }

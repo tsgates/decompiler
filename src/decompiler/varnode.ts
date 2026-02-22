@@ -211,6 +211,11 @@ export class Varnode {
     this.size = s;
     this.def = null;
     this.type = dt;
+    // DEBUG: track unique varnodes created with TYPE_PARTIALUNION
+    if (dt?.getMetatype() === 0 && m.getSpace()?.getName() === 'unique') {
+      console.error(`[DBG ctor] UNIQUE created with PARTIALUNION: addr=${m.toString()} sz=${s}`);
+      console.trace();
+    }
     this.high = null;
     this.mapentry = null;
     this.consumed = 0xFFFFFFFFFFFFFFFFn;
@@ -836,6 +841,11 @@ export class Varnode {
     if (lock === undefined) {
       // Single-arg version
       if (this.type === ct || this.isTypeLock()) return false;
+      // DEBUG: track when unique varnodes get TYPE_PARTIALUNION
+      if (ct.getMetatype() === 0 /* TYPE_PARTIALUNION */ && this.getAddr().getSpace()?.getName() === 'unique') {
+        console.error(`[DBG vn.updateType] UNIQUE gets PARTIALUNION: addr=${this.getAddr().toString()} sz=${this.getSize()} old=${this.type?.getName()}(${this.type?.getMetatype()}) new=PARTIALUNION def=${this.isWritten() ? (this.def as any).getOpcode().getName() : 'N/A'}`);
+        console.trace();
+      }
       this.type = ct;
       if (this.high !== null)
         this.high.typeDirty();
@@ -848,6 +858,10 @@ export class Varnode {
 
     if (this.isTypeLock() && (!override!)) return false;
     if ((this.type === ct) && (this.isTypeLock() === lock)) return false;
+    // DEBUG: track when unique varnodes get TYPE_PARTIALUNION (3-arg)
+    if (ct.getMetatype() === 0 /* TYPE_PARTIALUNION */ && this.getAddr().getSpace()?.getName() === 'unique') {
+      console.error(`[DBG vn.updateType3] UNIQUE gets PARTIALUNION: addr=${this.getAddr().toString()} sz=${this.getSize()} lock=${lock} override=${override}`);
+    }
     this.flags &= ~Varnode.typelock;
     if (lock)
       this.flags |= Varnode.typelock;
@@ -859,6 +873,11 @@ export class Varnode {
 
   /** Copy any symbol and type information from vn into this */
   copySymbol(vn: Varnode): void {
+    // DEBUG: track when unique gets PARTIALUNION via copySymbol
+    if (vn.type?.getMetatype() === 0 && this.getAddr().getSpace()?.getName() === 'unique') {
+      console.error(`[DBG copySymbol] UNIQUE gets PARTIALUNION: addr=${this.getAddr().toString()} from=${vn.getAddr().toString()} vn.type=${vn.type?.getName()} vn.lock=${vn.isTypeLock()}`);
+      console.trace();
+    }
     this.type = vn.type;
     this.mapentry = vn.mapentry;
     this.flags &= ~(Varnode.typelock | Varnode.namelock);
