@@ -343,12 +343,18 @@ function mainloop(status: IfaceStatus): void {
  */
 export function main(args: string[]): number {
   let initscript: string | null = null;
+  /** Parallel decompilation concurrency (0 = disabled/sequential) */
+  let parallelConcurrency: number = 0;
 
   {
     const extrapaths: string[] = [];
     let i = 0;
     while (i < args.length && args[i].startsWith('-')) {
-      if (args[i][1] === 'i') {
+      if (args[i] === '--parallel' || args[i] === '-p') {
+        i++;
+        const n = parseInt(args[i], 10);
+        parallelConcurrency = isNaN(n) ? 4 : Math.max(1, n);
+      } else if (args[i][1] === 'i') {
         i++;
         initscript = args[i];
       } else if (args[i][1] === 's') {
@@ -416,6 +422,11 @@ export function main(args: string[]): number {
         throw err;
       }
     }
+  }
+
+  // Make parallel concurrency available to commands via status
+  if (parallelConcurrency > 0) {
+    (status as any).parallelConcurrency = parallelConcurrency;
   }
 
   if (!status.done) {

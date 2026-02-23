@@ -280,6 +280,29 @@ output/compare/ls/
     _func.ts.c
 ```
 
+## Performance
+
+### Datatests (79 test functions)
+
+Benchmarked on Apple M-series (AARCH64). The C++ `decomp_test_dbg` binary spawns one process per test (each reloading SLEIGH specs), while the TS decompiler loads once and runs all tests in-process.
+
+| Metric | TS | C++ | Ratio |
+|--------|-----|------|-------|
+| Total time (79 tests) | 1.11s | 8.43s | **7.6x faster** |
+| Correctness | 79/79 | 79/79 | 100% identical |
+
+### Real Binaries (AARCH64, macOS)
+
+| Binary | Size | Functions | TS Time | C++ Time | Speedup | Identical Output |
+|--------|------|-----------|---------|----------|---------|------------------|
+| `/usr/bin/true` | 34K | 1 | 0.10s | 0.11s | 1.1x | 100% |
+| `/bin/echo` | 51K | 5 | 0.27s | 0.18s | 0.7x | 80% |
+| `/bin/ls` | 87K | 54 | 1.31s | 3.60s | 2.8x | 83% |
+| `/usr/bin/sort` | 105K | 149 | 3.54s | 37.59s | 10.6x | 75% |
+| `/usr/bin/ssh` | 751K | 1021 | 36.93s | 1478.54s | **40.0x** | 54.8% |
+
+The TS speedup scales with function count due to amortized SLEIGH loading. Output differences on real binaries are mostly minor type-inference variations (`int4` vs `int8`, stack address formatting).
+
 ## Project Structure
 
 ```

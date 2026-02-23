@@ -1220,6 +1220,24 @@ export class ActionDatabase {
   getCurrentName(): string { return this.currentactname; }
 
   /**
+   * Create a fresh deep clone of the current root Action.
+   * Unlike getCurrent(), this always returns a NEW independent action tree
+   * with reset mutable state. Used for parallel decompilation where each
+   * job needs its own action tree to avoid shared mutable state corruption.
+   * @returns a fresh clone of the current action tree
+   */
+  cloneCurrentAction(): Action {
+    const curgrp = this.getGroup(this.currentactname);
+    const universal = this.actionmap.get(ActionDatabase.universalname);
+    if (universal === undefined)
+      throw new LowlevelError("No universal action registered");
+    const cloned = universal.clone(curgrp);
+    if (cloned === null)
+      throw new LowlevelError("Failed to clone current action tree");
+    return cloned;
+  }
+
+  /**
    * Get a specific grouplist by name.
    * @param grp the grouplist name
    * @returns the ActionGroupList
