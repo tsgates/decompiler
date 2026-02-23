@@ -345,6 +345,8 @@ export function main(args: string[]): number {
   let initscript: string | null = null;
   /** Parallel decompilation concurrency (0 = disabled/sequential) */
   let parallelConcurrency: number = 0;
+  /** Worker-thread parallelism (0 = disabled, N = number of worker threads) */
+  let workerCount: number = 0;
 
   {
     const extrapaths: string[] = [];
@@ -354,6 +356,10 @@ export function main(args: string[]): number {
         i++;
         const n = parseInt(args[i], 10);
         parallelConcurrency = isNaN(n) ? 4 : Math.max(1, n);
+      } else if (args[i] === '--workers' || args[i] === '-w') {
+        i++;
+        const n = parseInt(args[i], 10);
+        workerCount = isNaN(n) ? 4 : Math.max(1, n);
       } else if (args[i][1] === 'i') {
         i++;
         initscript = args[i];
@@ -427,6 +433,9 @@ export function main(args: string[]): number {
   // Make parallel concurrency available to commands via status
   if (parallelConcurrency > 0) {
     (status as any).parallelConcurrency = parallelConcurrency;
+  }
+  if (workerCount > 0) {
+    (status as any).workerCount = workerCount;
   }
 
   if (!status.done) {

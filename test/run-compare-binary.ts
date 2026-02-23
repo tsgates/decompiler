@@ -1,22 +1,36 @@
 /**
  * Run both C++ and TS decompilers on an exported XML and compare per-function.
  *
- * Usage: npx tsx test/run-compare-binary.ts <exported.xml> [output-dir]
+ * Usage: npx tsx test/run-compare-binary.ts [--workers N] <exported.xml> [output-dir]
+ *
+ * --workers N  Use N worker threads for true multi-core parallelism.
+ *              Without this flag, decompilation is sequential (single-threaded).
  */
 import '../src/console/xml_arch.js';
 import { startDecompilerLibrary } from '../src/console/libdecomp.js';
 import { FunctionTestCollection } from '../src/console/testfunction.js';
 import { StringWriter } from '../src/util/writer.js';
+import { WorkerParallelDecompiler } from '../src/decompiler/parallel_workers.js';
 import { execSync } from 'child_process';
 import { writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
-const xmlFile = process.argv[2] || '/tmp/decomp-test/exported.xml';
-const outputDir = process.argv[3] || '';
-const CPP_BIN = 'ghidra-src/Ghidra/Features/Decompiler/src/decompile/cpp/decomp_test_dbg';
+// --- Parse arguments ---
+let numWorkers = 0;
+const positional: string[] = [];
+for (let i = 2; i < process.argv.length; i++) {
+    if (process.argv[i] === '--workers' || process.argv[i] === '-w') {
+        i++;
+        numWorkers = parseInt(process.argv[i], 10) || 4;
+    } else {
+        positional.push(process.argv[i]);
+    }
+}
 
-startDecompilerLibrary(SLEIGH_PATH);
+const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
+const xmlFile = positional[0] || '/tmp/decomp-test/exported.xml';
+const outputDir = positional[1] || '';
+const CPP_BIN = 'ghidra-src/Ghidra/Features/Decompiler/src/decompile/cpp/decomp_test_dbg';
 
 function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -24,22 +38,63 @@ function formatBytes(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// --- Run TS decompiler ---
-const tsMemBefore = process.memoryUsage();
-const tsStart = performance.now();
+// --- Run TS decompiler (sequential or worker-parallel) ---
+let tsOutput: string;
+let tsElapsed: number;
+let tsRss: number;
+let tsHeapUsed: number;
+let failures: string[] = [];
 
-const writer = new StringWriter();
-const failures: string[] = [];
-const tc = new FunctionTestCollection(writer);
-tc.loadTest(xmlFile);
-tc.runTests(failures);
+if (numWorkers > 0) {
+    // Worker-parallel path
+    console.log(`Using ${numWorkers} worker threads...\n`);
+    const tsMemBefore = process.memoryUsage();
+    const tsStart = performance.now();
 
-const tsElapsed = performance.now() - tsStart;
-const tsMemAfter = process.memoryUsage();
-const tsHeapUsed = tsMemAfter.heapUsed - tsMemBefore.heapUsed;
-const tsRss = tsMemAfter.rss;
+    const progressWriter = { write: (s: string) => process.stderr.write(s) };
+    const pd = new WorkerParallelDecompiler(xmlFile, SLEIGH_PATH, numWorkers, progressWriter);
+    console.log(`Found ${pd.getFunctionCount()} functions\n`);
 
-const tsOutput = tc.getLastOutput().split('\n').map((l: string) => l.trimEnd()).join('\n').trim();
+    const results = await pd.decompileAll();
+    tsElapsed = performance.now() - tsStart;
+    const tsMemAfter = process.memoryUsage();
+    tsHeapUsed = tsMemAfter.heapUsed - tsMemBefore.heapUsed;
+    tsRss = tsMemAfter.rss;
+
+    // Concatenate output in original order
+    tsOutput = results
+        .map(r => r.output)
+        .join('')
+        .split('\n')
+        .map((l: string) => l.trimEnd())
+        .join('\n')
+        .trim();
+
+    const failed = results.filter(r => !r.success);
+    if (failed.length > 0) {
+        for (const r of failed) {
+            failures.push(`${r.name}: ${r.error}`);
+        }
+    }
+} else {
+    // Sequential path (original behavior)
+    startDecompilerLibrary(SLEIGH_PATH);
+
+    const tsMemBefore = process.memoryUsage();
+    const tsStart = performance.now();
+
+    const writer = new StringWriter();
+    const tc = new FunctionTestCollection(writer);
+    tc.loadTest(xmlFile);
+    tc.runTests(failures);
+
+    tsElapsed = performance.now() - tsStart;
+    const tsMemAfter = process.memoryUsage();
+    tsHeapUsed = tsMemAfter.heapUsed - tsMemBefore.heapUsed;
+    tsRss = tsMemAfter.rss;
+
+    tsOutput = tc.getLastOutput().split('\n').map((l: string) => l.trimEnd()).join('\n').trim();
+}
 
 // --- Run C++ decompiler ---
 const dir = xmlFile.substring(0, xmlFile.lastIndexOf('/'));
@@ -167,6 +222,9 @@ const pct = total > 0 ? ((identical / total) * 100).toFixed(1) : '0.0';
 console.log(`\n=== Decompilation Comparison: ${binaryName} ===`);
 console.log(`Functions in C++: ${cppFuncs.size}`);
 console.log(`Functions in TS:  ${tsFuncs.size}`);
+if (numWorkers > 0) {
+    console.log(`Mode: ${numWorkers} worker threads`);
+}
 
 console.log(`\nPerformance:`);
 console.log(`  C++:  ${(cppElapsed / 1000).toFixed(2)}s` + (cppPeakMem > 0 ? `,  peak RSS ${formatBytes(cppPeakMem)}` : ''));

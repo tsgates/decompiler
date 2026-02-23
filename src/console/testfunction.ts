@@ -361,6 +361,32 @@ export class FunctionTestCollection {
   }
 
   /**
+   * Load a test program from an XML string instead of a file path.
+   *
+   * Identical to loadTest() but accepts the XML content directly.
+   * This allows worker threads to receive the XML via workerData
+   * without re-reading from disk.
+   *
+   * @param xmlContent - the XML string containing the test data
+   * @param name - optional label for error messages (default: '\<string\>')
+   */
+  loadTestFromString(xmlContent: string, name?: string): void {
+    this.fileName = name || '<string>';
+    const docStorage = new DocumentStorage();
+    const doc = docStorage.parseDocument(xmlContent);
+    const el = doc.getRoot();
+    if (el.getName() === 'decompilertest') {
+      this.restoreXml(docStorage, el);
+    } else if (el.getName() === 'binaryimage') {
+      this.restoreXmlOldForm(docStorage, el);
+    } else {
+      throw new IfaceParseError(
+        'Test data has unrecognized XML tag: ' + el.getName()
+      );
+    }
+  }
+
+  /**
    * Load tests from a \<decompilertest\> tag.
    */
   restoreXml(store: DocumentStorage, el: Element): void {
