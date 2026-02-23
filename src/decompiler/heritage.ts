@@ -4,6 +4,7 @@
 // ---- Imports from existing modules ----
 import { Address, SeqNum, RangeList } from "../core/address.js";
 import { AddrSpace, spacetype } from "../core/space.js";
+import { SortedMap } from "../util/sorted-set.js";
 import { OpCode } from "../core/opcodes.js";
 
 // Const enum aliases for OpCode members
@@ -102,7 +103,7 @@ export interface SizePass {
  * if so in which pass.
  */
 export class LocationMap {
-  private themap: Map<Address, SizePass> = new Map();
+  private themap: SortedMap<Address, SizePass> = new SortedMap<Address, SizePass>(Address.compare);
 
   /**
    * Mark a new address as heritaged.
@@ -118,19 +119,16 @@ export class LocationMap {
    * @returns { key, intersect }
    */
   add(addr: Address, size: number, pass: number): { key: Address; intersect: number } {
-    // Get sorted keys
-    const keys = this.sortedKeys();
-    // Find first key <= addr via lower_bound-like logic
-    let idx = this.lowerBound(keys, addr);
+    // Find first key >= addr
+    let iter = this.themap.lower_bound(addr);
 
     // Back up one if possible
-    if (idx > 0) idx--;
-    // If the entry before doesn't overlap, advance
-    if (idx < keys.length) {
-      const k = keys[idx];
-      const sp = this.themap.get(k)!;
-      if (addr.overlap(0, k, sp.size) === -1) {
-        idx++;
+    if (!iter.equals(this.themap.begin())) {
+      const prev = iter.clone().prev();
+      const k = prev.key;
+      const sp = prev.value;
+      if (addr.overlap(0, k, sp.size) !== -1) {
+        iter = prev;
       }
     }
 
@@ -138,9 +136,9 @@ export class LocationMap {
     let intersect = 0;
 
     // Check if the current entry overlaps
-    if (idx < keys.length) {
-      const k = keys[idx];
-      const sp = this.themap.get(k)!;
+    if (!iter.isEnd) {
+      const k = iter.key;
+      const sp = iter.value;
       where = addr.overlap(0, k, sp.size);
       if (where !== -1) {
         if (where + size <= sp.size) {
@@ -153,15 +151,14 @@ export class LocationMap {
           intersect = 1;
           pass = sp.pass;
         }
-        this.themap.delete(k);
-        keys.splice(idx, 1);
+        iter = this.themap.erase(iter);
       }
     }
 
     // Merge with subsequent overlapping entries
-    while (idx < keys.length) {
-      const k = keys[idx];
-      const sp = this.themap.get(k)!;
+    while (!iter.isEnd) {
+      const k = iter.key;
+      const sp = iter.value;
       where = k.overlap(0, addr, size);
       if (where === -1) break;
       if (where + sp.size > size) {
@@ -171,13 +168,12 @@ export class LocationMap {
         intersect = 1;
         pass = sp.pass;
       }
-      this.themap.delete(k);
-      keys.splice(idx, 1);
+      iter = this.themap.erase(iter);
     }
 
     const sp: SizePass = { size, pass };
-    this.themap.set(addr, sp);
-    return { key: addr, intersect };
+    const inserted = this.themap.set(addr, sp);
+    return { key: inserted.key, intersect };
   }
 
   /**
@@ -185,12 +181,11 @@ export class LocationMap {
    * Returns undefined if the address is unheritaged.
    */
   find(addr: Address): { key: Address; value: SizePass } | undefined {
-    const keys = this.sortedKeys();
-    let idx = this.upperBound(keys, addr);
-    if (idx === 0) return undefined;
-    idx--;
-    const k = keys[idx];
-    const sp = this.themap.get(k)!;
+    const iter = this.themap.upper_bound(addr);
+    if (iter.equals(this.themap.begin())) return undefined;
+    const prev = iter.clone().prev();
+    const k = prev.key;
+    const sp = prev.value;
     if (addr.overlap(0, k, sp.size) !== -1) {
       return { key: k, value: sp };
     }
@@ -202,12 +197,11 @@ export class LocationMap {
    * it was not heritaged.
    */
   findPass(addr: Address): number {
-    const keys = this.sortedKeys();
-    let idx = this.upperBound(keys, addr);
-    if (idx === 0) return -1;
-    idx--;
-    const k = keys[idx];
-    const sp = this.themap.get(k)!;
+    const iter = this.themap.upper_bound(addr);
+    if (iter.equals(this.themap.begin())) return -1;
+    const prev = iter.clone().prev();
+    const k = prev.key;
+    const sp = prev.value;
     if (addr.overlap(0, k, sp.size) !== -1) {
       return sp.pass;
     }
@@ -224,35 +218,6 @@ export class LocationMap {
 
   clear(): void {
     this.themap.clear();
-  }
-
-  // ---- internal helpers for ordered iteration ----
-  private sortedKeys(): Address[] {
-    return Array.from(this.themap.keys()).sort((a, b) => Address.compare(a, b));
-  }
-
-  /** Return index of first key >= addr */
-  private lowerBound(keys: Address[], addr: Address): number {
-    let lo = 0;
-    let hi = keys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (Address.compare(keys[mid], addr) < 0) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  }
-
-  /** Return index of first key > addr */
-  private upperBound(keys: Address[], addr: Address): number {
-    let lo = 0;
-    let hi = keys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (Address.compare(keys[mid], addr) <= 0) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
   }
 }
 

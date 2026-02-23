@@ -211,11 +211,6 @@ export class Varnode {
     this.size = s;
     this.def = null;
     this.type = dt;
-    // DEBUG: track unique varnodes created with TYPE_PARTIALUNION
-    if (dt?.getMetatype() === 0 && m.getSpace()?.getName() === 'unique') {
-      console.error(`[DBG ctor] UNIQUE created with PARTIALUNION: addr=${m.toString()} sz=${s}`);
-      console.trace();
-    }
     this.high = null;
     this.mapentry = null;
     this.consumed = 0xFFFFFFFFFFFFFFFFn;
@@ -787,9 +782,12 @@ export class Varnode {
 
   /** @internal Erase a descendant (reading) PcodeOp from this Varnode's list */
   eraseDescend(op: PcodeOp): void {
-    const idx = this.descend.indexOf(op);
+    const arr = this.descend;
+    const idx = arr.indexOf(op);
     if (idx >= 0) {
-      this.descend.splice(idx, 1);
+      const last = arr.length - 1;
+      if (idx !== last) arr[idx] = arr[last];
+      arr.length = last;
     }
     this.setFlags(Varnode.coverdirty);
   }
@@ -841,11 +839,6 @@ export class Varnode {
     if (lock === undefined) {
       // Single-arg version
       if (this.type === ct || this.isTypeLock()) return false;
-      // DEBUG: track when unique varnodes get TYPE_PARTIALUNION
-      if (ct.getMetatype() === 0 /* TYPE_PARTIALUNION */ && this.getAddr().getSpace()?.getName() === 'unique') {
-        console.error(`[DBG vn.updateType] UNIQUE gets PARTIALUNION: addr=${this.getAddr().toString()} sz=${this.getSize()} old=${this.type?.getName()}(${this.type?.getMetatype()}) new=PARTIALUNION def=${this.isWritten() ? (this.def as any).getOpcode().getName() : 'N/A'}`);
-        console.trace();
-      }
       this.type = ct;
       if (this.high !== null)
         this.high.typeDirty();
@@ -858,10 +851,6 @@ export class Varnode {
 
     if (this.isTypeLock() && (!override!)) return false;
     if ((this.type === ct) && (this.isTypeLock() === lock)) return false;
-    // DEBUG: track when unique varnodes get TYPE_PARTIALUNION (3-arg)
-    if (ct.getMetatype() === 0 /* TYPE_PARTIALUNION */ && this.getAddr().getSpace()?.getName() === 'unique') {
-      console.error(`[DBG vn.updateType3] UNIQUE gets PARTIALUNION: addr=${this.getAddr().toString()} sz=${this.getSize()} lock=${lock} override=${override}`);
-    }
     this.flags &= ~Varnode.typelock;
     if (lock)
       this.flags |= Varnode.typelock;
@@ -873,11 +862,6 @@ export class Varnode {
 
   /** Copy any symbol and type information from vn into this */
   copySymbol(vn: Varnode): void {
-    // DEBUG: track when unique gets PARTIALUNION via copySymbol
-    if (vn.type?.getMetatype() === 0 && this.getAddr().getSpace()?.getName() === 'unique') {
-      console.error(`[DBG copySymbol] UNIQUE gets PARTIALUNION: addr=${this.getAddr().toString()} from=${vn.getAddr().toString()} vn.type=${vn.type?.getName()} vn.lock=${vn.isTypeLock()}`);
-      console.trace();
-    }
     this.type = vn.type;
     this.mapentry = vn.mapentry;
     this.flags &= ~(Varnode.typelock | Varnode.namelock);
@@ -1948,29 +1932,28 @@ export class VarnodeBank {
 
   /** Beginning of Varnodes in given address space sorted by location */
   beginLocSpace(spaceid: AddrSpace): SortedSetIterator<Varnode> {
-    this.searchvn.loc = new Address(spaceid, 0n);
+    this.searchvn.loc.set(spaceid, 0n);
     return this.loc_tree.lower_bound(this.searchvn);
   }
 
   /** Ending of Varnodes in given address space sorted by location */
   endLocSpace(spaceid: AddrSpace): SortedSetIterator<Varnode> {
-    this.searchvn.loc = new Address(this.manage.getNextSpaceInOrder(spaceid), 0n);
+    this.searchvn.loc.set(this.manage.getNextSpaceInOrder(spaceid), 0n);
     return this.loc_tree.lower_bound(this.searchvn);
   }
 
   /** Beginning of Varnodes starting at a given address sorted by location */
   beginLocAddr(addr: Address): SortedSetIterator<Varnode> {
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     return this.loc_tree.lower_bound(this.searchvn);
   }
 
   /** End of Varnodes starting at a given address sorted by location */
   endLocAddr(addr: Address): SortedSetIterator<Varnode> {
     if (addr.getOffset() === addr.getSpace()!.getHighest()) {
-      const space = addr.getSpace()!;
-      this.searchvn.loc = new Address(this.manage.getNextSpaceInOrder(space), 0n);
+      this.searchvn.loc.set(this.manage.getNextSpaceInOrder(addr.getSpace()!), 0n);
     } else {
-      this.searchvn.loc = addr.add(1n);
+      this.searchvn.loc.set(addr.getSpace(), addr.getSpace()!.wrapOffset(addr.getOffset() + 1n));
     }
     return this.loc_tree.lower_bound(this.searchvn);
   }
@@ -1978,7 +1961,7 @@ export class VarnodeBank {
   /** Beginning of Varnodes of given size and starting address sorted by location */
   beginLocSizeAddr(s: number, addr: Address): SortedSetIterator<Varnode> {
     this.searchvn.size = s;
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     const iter = this.loc_tree.lower_bound(this.searchvn);
     this.searchvn.size = 0;
     return iter;
@@ -1987,7 +1970,7 @@ export class VarnodeBank {
   /** End of Varnodes of given size and starting address sorted by location */
   endLocSizeAddr(s: number, addr: Address): SortedSetIterator<Varnode> {
     this.searchvn.size = s + 1;
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     const iter = this.loc_tree.lower_bound(this.searchvn);
     this.searchvn.size = 0;
     return iter;
@@ -2002,7 +1985,7 @@ export class VarnodeBank {
   beginLocSizeAddrFlag(s: number, addr: Address, fl: number): SortedSetIterator<Varnode> {
     if (fl === Varnode.input) {
       this.searchvn.size = s;
-      this.searchvn.loc = addr;
+      this.searchvn.loc.assign(addr);
       const iter = this.loc_tree.lower_bound(this.searchvn);
       this.searchvn.size = 0;
       return iter;
@@ -2011,7 +1994,7 @@ export class VarnodeBank {
       // Create a minimal PcodeOp-like search key
       const searchop = { getSeqNum: () => new SeqNum(MachExtreme.m_minimal) };
       this.searchvn.size = s;
-      this.searchvn.loc = addr;
+      this.searchvn.loc.assign(addr);
       this.searchvn.flags = Varnode.written;
       this.searchvn.def = searchop;
       const iter = this.loc_tree.lower_bound(this.searchvn);
@@ -2023,7 +2006,7 @@ export class VarnodeBank {
     // fl === 0: find free varnodes
     const searchop = { getSeqNum: () => new SeqNum(MachExtreme.m_maximal) };
     this.searchvn.size = s;
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     this.searchvn.flags = Varnode.written;
     this.searchvn.def = searchop;
     const iter = this.loc_tree.upper_bound(this.searchvn);
@@ -2036,7 +2019,7 @@ export class VarnodeBank {
    * End of Varnodes sorted by location, restricted by size, address, and flags.
    */
   endLocSizeAddrFlag(s: number, addr: Address, fl: number): SortedSetIterator<Varnode> {
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
 
     if (fl === Varnode.written) {
       this.searchvn.size = s;
@@ -2066,7 +2049,7 @@ export class VarnodeBank {
    */
   beginLocSizeAddrPcUniq(s: number, addr: Address, pc: Address, uniq: number): SortedSetIterator<Varnode> {
     this.searchvn.size = s;
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     this.searchvn.flags = Varnode.written;
     if (uniq === 0xFFFFFFFF) uniq = 0;
     const searchop = { getSeqNum: () => new SeqNum(pc, uniq) };
@@ -2082,7 +2065,7 @@ export class VarnodeBank {
    */
   endLocSizeAddrPcUniq(s: number, addr: Address, pc: Address, uniq: number): SortedSetIterator<Varnode> {
     this.searchvn.size = s;
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     this.searchvn.flags = Varnode.written;
     const searchop = { getSeqNum: () => new SeqNum(pc, uniq) };
     this.searchvn.def = searchop;
@@ -2144,7 +2127,7 @@ export class VarnodeBank {
     if (fl === Varnode.input) {
       return this.def_tree.begin();
     } else if (fl === Varnode.written) {
-      this.searchvn.loc = new Address(MachExtreme.m_minimal);
+      this.searchvn.loc.setMinimal();
       this.searchvn.flags = Varnode.written;
       const searchop = { getSeqNum: () => new SeqNum(MachExtreme.m_minimal) };
       this.searchvn.def = searchop;
@@ -2154,7 +2137,7 @@ export class VarnodeBank {
     }
 
     // Start of frees
-    this.searchvn.loc = new Address(MachExtreme.m_maximal);
+    this.searchvn.loc.setMaximal();
     this.searchvn.flags = Varnode.written;
     const searchop = { getSeqNum: () => new SeqNum(MachExtreme.m_maximal) };
     this.searchvn.def = searchop;
@@ -2170,7 +2153,7 @@ export class VarnodeBank {
   endDefFlag(fl: number): SortedSetIterator<Varnode> {
     if (fl === Varnode.input) {
       // Highest input is lowest written
-      this.searchvn.loc = new Address(MachExtreme.m_minimal);
+      this.searchvn.loc.setMinimal();
       this.searchvn.flags = Varnode.written;
       const searchop = { getSeqNum: () => new SeqNum(MachExtreme.m_minimal) };
       this.searchvn.def = searchop;
@@ -2178,7 +2161,7 @@ export class VarnodeBank {
       this.searchvn.flags = Varnode.input;
       return iter;
     } else if (fl === Varnode.written) {
-      this.searchvn.loc = new Address(MachExtreme.m_maximal);
+      this.searchvn.loc.setMaximal();
       this.searchvn.flags = Varnode.written;
       const searchop = { getSeqNum: () => new SeqNum(MachExtreme.m_maximal) };
       this.searchvn.def = searchop;
@@ -2198,12 +2181,12 @@ export class VarnodeBank {
     if (fl === Varnode.written)
       throw new LowlevelError("Cannot get contiguous written AND addressed");
     if (fl === Varnode.input) {
-      this.searchvn.loc = addr;
+      this.searchvn.loc.assign(addr);
       return this.def_tree.lower_bound(this.searchvn);
     }
 
     // Free varnodes with given address
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     this.searchvn.flags = 0;
     const iter = this.def_tree.upper_bound(this.searchvn);
     this.searchvn.flags = Varnode.input;
@@ -2219,7 +2202,7 @@ export class VarnodeBank {
     if (fl === Varnode.written)
       throw new LowlevelError("Cannot get contiguous written AND addressed");
     if (fl === Varnode.input) {
-      this.searchvn.loc = addr;
+      this.searchvn.loc.assign(addr);
       this.searchvn.size = 1000000;
       const iter = this.def_tree.lower_bound(this.searchvn);
       this.searchvn.size = 0;
@@ -2227,7 +2210,7 @@ export class VarnodeBank {
     }
 
     // Free varnodes with given address
-    this.searchvn.loc = addr;
+    this.searchvn.loc.assign(addr);
     this.searchvn.size = 1000000;
     this.searchvn.flags = 0;
     const iter = this.def_tree.lower_bound(this.searchvn);

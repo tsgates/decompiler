@@ -437,6 +437,27 @@ export class Address {
     return this;
   }
 
+  /** Set the space and offset in place (avoids allocation). */
+  set(space: AddrSpace | null, offset: bigint): this {
+    this.base = space;
+    this.offset = offset;
+    return this;
+  }
+
+  /** Set to minimal sentinel in place. */
+  setMinimal(): this {
+    this.base = null;
+    this.offset = 0n;
+    return this;
+  }
+
+  /** Set to maximal sentinel in place. */
+  setMaximal(): this {
+    this.base = MAXIMAL_SPACE_SENTINEL;
+    this.offset = 0xFFFFFFFFFFFFFFFFn;
+    return this;
+  }
+
   // ---- Comparison (instance methods) ----
 
   /** Check if two addresses are equal. */

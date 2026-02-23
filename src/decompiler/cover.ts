@@ -458,15 +458,42 @@ export class CoverBlock {
  * Internally this is implemented as a map from basic block index to their non-empty CoverBlock.
  */
 export class Cover {
-  /** block index -> CoverBlock */
-  private cover: Map<int4, CoverBlock> = new Map();
+  /** Sorted ascending block indices */
+  private blockIndices: int4[] = [];
+  /** CoverBlocks parallel to blockIndices */
+  private blocks: CoverBlock[] = [];
 
   /** Global empty CoverBlock for blocks not covered by this */
   private static readonly emptyBlock: CoverBlock = new CoverBlock();
 
+  /** Binary search: index of first element >= idx */
+  private _lowerBound(idx: int4): number {
+    let lo = 0;
+    let hi = this.blockIndices.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.blockIndices[mid] < idx) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** Get or create a CoverBlock for the given block index */
+  private _getOrCreate(idx: int4): CoverBlock {
+    const pos = this._lowerBound(idx);
+    if (pos < this.blockIndices.length && this.blockIndices[pos] === idx) {
+      return this.blocks[pos];
+    }
+    const block = new CoverBlock();
+    this.blockIndices.splice(pos, 0, idx);
+    this.blocks.splice(pos, 0, block);
+    return block;
+  }
+
   /** Clear this to an empty Cover */
   clear(): void {
-    this.cover.clear();
+    this.blockIndices.length = 0;
+    this.blocks.length = 0;
   }
 
   /**
@@ -479,42 +506,24 @@ export class Cover {
    * @returns the comparison value
    */
   compareTo(op2: Cover): int4 {
-    let a: int4, b: int4;
+    const a: int4 = this.blockIndices.length === 0 ? 1000000 : this.blockIndices[0];
+    const b: int4 = op2.blockIndices.length === 0 ? 1000000 : op2.blockIndices[0];
 
-    const iter = this.cover.keys();
-    const first = iter.next();
-    if (first.done)
-      a = 1000000;
-    else
-      a = first.value;
-
-    const iter2 = op2.cover.keys();
-    const first2 = iter2.next();
-    if (first2.done)
-      b = 1000000;
-    else
-      b = first2.value;
-
-    if (a < b) {
-      return -1;
-    } else if (a === b) {
-      return 0;
-    }
+    if (a < b) return -1;
+    if (a === b) return 0;
     return 1;
   }
 
   /**
    * Get the CoverBlock corresponding to the i-th block.
-   * Return a representative CoverBlock describing how much of the given block
-   * is covered by this.
    * @param i is the index of the given block
    * @returns a reference to the corresponding CoverBlock
    */
   getCoverBlock(i: int4): CoverBlock {
-    const block = this.cover.get(i);
-    if (block === undefined)
-      return Cover.emptyBlock;
-    return block;
+    const pos = this._lowerBound(i);
+    if (pos < this.blockIndices.length && this.blockIndices[pos] === i)
+      return this.blocks[pos];
+    return Cover.emptyBlock;
   }
 
   /**
@@ -530,13 +539,8 @@ export class Cover {
    */
   intersect(op2: Cover): int4 {
     let res: int4 = 0;
-
-    // We need to iterate both maps in key order.
-    // JavaScript Map iterates in insertion order, which may not be sorted.
-    // We need sorted iteration for the merge-join algorithm.
-    const keys1 = Array.from(this.cover.keys()).sort((a, b) => a - b);
-    const keys2 = Array.from(op2.cover.keys()).sort((a, b) => a - b);
-
+    const keys1 = this.blockIndices;
+    const keys2 = op2.blockIndices;
     let i1 = 0;
     let i2 = 0;
 
@@ -549,34 +553,27 @@ export class Cover {
       } else if (keys1[i1] > keys2[i2]) {
         ++i2;
       } else {
-        const newres = this.cover.get(keys1[i1])!.intersect(op2.cover.get(keys2[i2])!);
+        const newres = this.blocks[i1].intersect(op2.blocks[i2]);
         if (newres === 2) return 2;
         if (newres === 1)
-          res = 1;   // At least a point intersection
+          res = 1;
         ++i1;
         ++i2;
       }
     }
-    // Note: unreachable in C++ but kept for faithfulness
-    // return res;
   }
 
   /**
    * Generate a list of blocks that intersect.
    *
-   * For each block for which this and another Cover intersect,
-   * add the block's index to a result list if the type of intersection
-   * exceeds a characterization level.
    * @param listout will hold the list of intersecting block indices
    * @param op2 is the other Cover
    * @param level is the characterization threshold which must be exceeded
    */
   intersectList(listout: int4[], op2: Cover, level: int4): void {
     listout.length = 0;
-
-    const keys1 = Array.from(this.cover.keys()).sort((a, b) => a - b);
-    const keys2 = Array.from(op2.cover.keys()).sort((a, b) => a - b);
-
+    const keys1 = this.blockIndices;
+    const keys2 = op2.blockIndices;
     let i1 = 0;
     let i2 = 0;
 
@@ -589,7 +586,7 @@ export class Cover {
       } else if (keys1[i1] > keys2[i2]) {
         ++i2;
       } else {
-        const val = this.cover.get(keys1[i1])!.intersect(op2.cover.get(keys2[i2])!);
+        const val = this.blocks[i1].intersect(op2.blocks[i2]);
         if (val >= level)
           listout.push(keys1[i1]);
         ++i1;
@@ -601,9 +598,6 @@ export class Cover {
   /**
    * Does this cover any PcodeOp in the given PcodeOpSet.
    *
-   * If any PcodeOp in the set falls inside this Cover, a secondary test that the PcodeOp
-   * affects the representative Varnode is performed.  If the test returns true, this is
-   * considered a full intersection and this method returns true.  Otherwise it returns false.
    * @param opSet is the given set of PcodeOps
    * @param rep is the representative Varnode to use for secondary testing
    * @returns true if there is an intersection with this
@@ -614,18 +608,11 @@ export class Cover {
     let opIndex: int4 = opSet.blockStart[setBlock];
     let setIndex: int4 = opSet.opList[opIndex].getParent().getIndex();
 
-    // We need to find the lower_bound in our cover map for the first block in opSet.
-    // Since JS Map doesn't have lower_bound, we use sorted keys.
-    const coverKeys = Array.from(this.cover.keys()).sort((a, b) => a - b);
     const firstBlockIndex: int4 = opSet.opList[0].getParent().getIndex();
-    let ck = 0;
-    // Advance to first key >= firstBlockIndex
-    while (ck < coverKeys.length && coverKeys[ck] < firstBlockIndex) {
-      ck++;
-    }
+    let ck = this._lowerBound(firstBlockIndex);
 
-    while (ck < coverKeys.length) {
-      const coverIndex: int4 = coverKeys[ck];
+    while (ck < this.blockIndices.length) {
+      const coverIndex: int4 = this.blockIndices[ck];
       if (coverIndex < setIndex) {
         ++ck;
       } else if (coverIndex > setIndex) {
@@ -634,7 +621,7 @@ export class Cover {
         opIndex = opSet.blockStart[setBlock];
         setIndex = opSet.opList[opIndex].getParent().getIndex();
       } else {
-        const coverBlock: CoverBlock = this.cover.get(coverKeys[ck])!;
+        const coverBlock: CoverBlock = this.blocks[ck];
         ++ck;
         let opMax: int4 = opSet.opList.length;
         setBlock += 1;
@@ -642,9 +629,9 @@ export class Cover {
           opMax = opSet.blockStart[setBlock];
         do {
           const op: PcodeOp = opSet.opList[opIndex];
-          if (coverBlock.contain(op)) {         // Does range contain the call?
-            if (coverBlock.boundary(op) === 0) { // Is the call on the boundary
-              if (opSet.affectsTest(op, rep))    // Do secondary testing
+          if (coverBlock.contain(op)) {
+            if (coverBlock.boundary(op) === 0) {
+              if (opSet.affectsTest(op, rep))
                 return true;
             }
           }
@@ -659,23 +646,18 @@ export class Cover {
   /**
    * Characterize the intersection on a specific block.
    *
-   * Looking only at the given block, return:
-   *   - 0 if there is no intersection
-   *   - 1 if the only intersection is on a boundary point
-   *   - 2 if the intersection contains a range of p-code ops
-   *
    * @param blk is the index of the given block
    * @param op2 is the other Cover
    * @returns the characterization
    */
   intersectByBlock(blk: int4, op2: Cover): int4 {
-    const block1 = this.cover.get(blk);
-    if (block1 === undefined) return 0;
+    const pos1 = this._lowerBound(blk);
+    if (pos1 >= this.blockIndices.length || this.blockIndices[pos1] !== blk) return 0;
 
-    const block2 = op2.cover.get(blk);
-    if (block2 === undefined) return 0;
+    const pos2 = op2._lowerBound(blk);
+    if (pos2 >= op2.blockIndices.length || op2.blockIndices[pos2] !== blk) return 0;
 
-    return block1.intersect(block2);
+    return this.blocks[pos1].intersect(op2.blocks[pos2]);
   }
 
   /**
@@ -686,8 +668,9 @@ export class Cover {
    * @returns true if there is containment
    */
   contain(op: PcodeOp, max: int4): boolean {
-    const block = this.cover.get(op.getParent().getIndex());
-    if (block === undefined) return false;
+    const pos = this._lowerBound(op.getParent().getIndex());
+    if (pos >= this.blockIndices.length || this.blockIndices[pos] !== op.getParent().getIndex()) return false;
+    const block = this.blocks[pos];
     if (block.contain(op)) {
       if (max === 1) return true;
       if (0 === block.boundary(op)) return true;
@@ -698,15 +681,6 @@ export class Cover {
   /**
    * Check the definition of a Varnode for containment.
    *
-   * If the given Varnode has a defining PcodeOp this is checked for containment.
-   * If the Varnode is an input, check if this covers the start of the function.
-   *
-   * Return:
-   *   - 0 if cover does not contain varnode definition
-   *   - 1 if it is contained in interior
-   *   - 2 if the defining points intersect
-   *   - 3 if Cover's tail is the varnode definition
-   *
    * @param vn is the given Varnode
    * @returns the containment characterization
    */
@@ -715,14 +689,14 @@ export class Cover {
     let blk: int4;
 
     if (op === null) {
-      // C++: op = (PcodeOp*)2  — input sentinel
       op = START_INPUT;
       blk = 0;
     } else {
       blk = (op as PcodeOp).getParent().getIndex();
     }
-    const block = this.cover.get(blk);
-    if (block === undefined) return 0;
+    const pos = this._lowerBound(blk);
+    if (pos >= this.blockIndices.length || this.blockIndices[pos] !== blk) return 0;
+    const block = this.blocks[pos];
     if (block.contain(op)) {
       const boundtype: int4 = block.boundary(op);
       if (boundtype === 0) return 1;
@@ -737,21 +711,16 @@ export class Cover {
    * @param op2 is the other Cover
    */
   merge(op2: Cover): void {
-    for (const [key, value] of op2.cover) {
-      let block = this.cover.get(key);
-      if (block === undefined) {
-        block = new CoverBlock();
-        this.cover.set(key, block);
-      }
-      block.merge(value);
+    for (let i = 0; i < op2.blockIndices.length; i++) {
+      const key = op2.blockIndices[i];
+      const block = this._getOrCreate(key);
+      block.merge(op2.blocks[i]);
     }
   }
 
   /**
    * Reset this based on def-use of a single Varnode.
    *
-   * The cover is set to all p-code ops between the point where the Varnode is defined
-   * and all the points where it is read.
    * @param vn is the single Varnode
    */
   rebuild(vn: Varnode): void {
@@ -762,7 +731,6 @@ export class Cover {
     do {
       const curVn: Varnode = path[pos];
       pos += 1;
-      // Iterate over all descendant PcodeOps that read this Varnode
       for (let d = 0; d < curVn.descend.length; d++) {
         const op: PcodeOp = curVn.descend[d];
         this.addRefPoint(op, vn);
@@ -776,30 +744,21 @@ export class Cover {
   /**
    * Reset to the single point where the given Varnode is defined.
    *
-   * Any previous cover is removed.  Calling this with an input Varnode still
-   * produces a valid Cover.
    * @param vn is the Varnode
    */
   addDefPoint(vn: Varnode): void {
-    this.cover.clear();
+    this.blockIndices.length = 0;
+    this.blocks.length = 0;
 
     const def: PcodeOp | null = vn.getDef();
     if (def !== null) {
       const blockIdx: int4 = def.getParent().getIndex();
-      let block = this.cover.get(blockIdx);
-      if (block === undefined) {
-        block = new CoverBlock();
-        this.cover.set(blockIdx, block);
-      }
-      block.setBegin(def);     // Set the point topology
+      const block = this._getOrCreate(blockIdx);
+      block.setBegin(def);
       block.setEnd(def);
     } else if (vn.isInput()) {
-      let block = this.cover.get(0);
-      if (block === undefined) {
-        block = new CoverBlock();
-        this.cover.set(0, block);
-      }
-      block.setBegin(START_INPUT);  // Special mark for input: C++ (PcodeOp*)2
+      const block = this._getOrCreate(0);
+      block.setBegin(START_INPUT);
       block.setEnd(START_INPUT);
     }
   }
@@ -807,37 +766,27 @@ export class Cover {
   /**
    * Fill-in this recursively from the given block.
    *
-   * Add to this Cover recursively, starting at bottom of the given block and
-   * filling in backward until we run into existing cover.
    * @param bl is the starting block to add
    */
   private addRefRecurse(bl: FlowBlock): void {
     let j: int4;
 
     const blIdx: int4 = bl.getIndex();
-    let block = this.cover.get(blIdx);
-    if (block === undefined) {
-      block = new CoverBlock();
-      this.cover.set(blIdx, block);
-    }
+    const block = this._getOrCreate(blIdx);
     if (block.empty()) {
-      block.setAll();           // No cover encountered, fill in entire block
-      for (j = 0; j < bl.sizeIn(); ++j)     // Recurse to all blocks that fall into bl
+      block.setAll();
+      for (j = 0; j < bl.sizeIn(); ++j)
         this.addRefRecurse(bl.getIn(j));
     } else {
       const op: CoverBoundary = block.getStop();
       const ustart: uintm = CoverBlock.getUIndex(block.getStart());
       const ustop: uintm = CoverBlock.getUIndex(op);
       if ((ustop !== 0xFFFFFFFF) && (ustop >= ustart))
-        block.setEnd(STOP_END);  // Fill in to the bottom: C++ (PcodeOp*)1
+        block.setEnd(STOP_END);
 
       if ((ustop === 0) && (block.getStart() === null)) {
-        // C++: block.getStart() == (PcodeOp*)0
         if ((op !== null) && (op !== START_INPUT) && (op !== STOP_END) &&
             (op as PcodeOp).code() === OpCode.CPUI_MULTIEQUAL) {
-          // This block contains only an infinitesimal tip
-          // of cover through one branch of a MULTIEQUAL
-          // we still need to traverse through branches
           for (j = 0; j < bl.sizeIn(); ++j)
             this.addRefRecurse(bl.getIn(j));
         }
@@ -848,8 +797,6 @@ export class Cover {
   /**
    * Add a variable read to this Cover.
    *
-   * Given a Varnode being read and the PcodeOp which reads it, add the point of the
-   * read to this and recursively fill in backwards until we run into existing cover.
    * @param ref is the reading PcodeOp
    * @param vn is the Varnode being read
    */
@@ -858,32 +805,21 @@ export class Cover {
     const bl: FlowBlock = ref.getParent();
 
     const blIdx: int4 = bl.getIndex();
-    let block = this.cover.get(blIdx);
-    if (block === undefined) {
-      block = new CoverBlock();
-      this.cover.set(blIdx, block);
-    }
+    const block = this._getOrCreate(blIdx);
     if (block.empty()) {
       block.setEnd(ref);
     } else {
       if (block.contain(ref)) {
         if (ref.code() !== OpCode.CPUI_MULTIEQUAL) return;
-        // Even if MULTIEQUAL ref is contained
-        // we may be adding new cover because we are
-        // looking at a different branch. So don't return
       } else {
         const op: CoverBoundary = block.getStop();
         const startop: CoverBoundary = block.getStart();
-        block.setEnd(ref);       // Otherwise update endpoint
+        block.setEnd(ref);
         const ustop: uintm = CoverBlock.getUIndex(block.getStop());
         if (ustop >= CoverBlock.getUIndex(startop)) {
-          // C++: op != (PcodeOp*)0 && op != (PcodeOp*)2
           if ((op !== null) && (op !== START_INPUT) && (op !== STOP_END) &&
               (op as PcodeOp).code() === OpCode.CPUI_MULTIEQUAL &&
               (startop === null)) {
-            // This block contains only an infinitesimal tip
-            // of cover through one branch of a MULTIEQUAL
-            // we still need to traverse through branches
             for (j = 0; j < bl.sizeIn(); ++j)
               this.addRefRecurse(bl.getIn(j));
           }
@@ -908,18 +844,27 @@ export class Cover {
    */
   dump(): string {
     let s = '';
-    // Iterate in sorted key order
-    const entries = Array.from(this.cover.entries()).sort((a, b) => a[0] - b[0]);
-    for (const [key, value] of entries) {
-      s += `${key}: ${value.dump()}\n`;
+    for (let i = 0; i < this.blockIndices.length; i++) {
+      s += `${this.blockIndices[i]}: ${this.blocks[i].dump()}\n`;
     }
     return s;
   }
 
   /** Get beginning of CoverBlocks (as sorted entries) */
   [Symbol.iterator](): IterableIterator<[int4, CoverBlock]> {
-    const entries = Array.from(this.cover.entries()).sort((a, b) => a[0] - b[0]);
-    return entries[Symbol.iterator]();
+    const indices = this.blockIndices;
+    const blocks = this.blocks;
+    let i = 0;
+    const iter: IterableIterator<[int4, CoverBlock]> = {
+      next(): IteratorResult<[int4, CoverBlock]> {
+        if (i >= indices.length) return { done: true, value: undefined };
+        const result: [int4, CoverBlock] = [indices[i], blocks[i]];
+        i++;
+        return { done: false, value: result };
+      },
+      [Symbol.iterator]() { return this; }
+    };
+    return iter;
   }
 
   /** Get the internal map entries for iteration */

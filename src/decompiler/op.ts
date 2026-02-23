@@ -285,10 +285,14 @@ export class PcodeOp {
   public parent: BlockBasic | null;
   /** @internal Index within basic block's op list */
   public basiciter: number;
-  /** @internal Position in alive/dead list */
+  /** @internal Position in dead list (only used when dead) */
   public insertiter: number;
   /** @internal Position in opcode list */
   public codeiter: number;
+  /** @internal Previous op in alive linked list */
+  public _prevAlive: PcodeOp | null;
+  /** @internal Next op in alive linked list */
+  public _nextAlive: PcodeOp | null;
   /** @internal The one possible output Varnode of this op */
   public output: Varnode | null;
   /** @internal The ordered list of input Varnodes for this op */
@@ -309,6 +313,8 @@ export class PcodeOp {
     this.basiciter = -1;
     this.insertiter = -1;
     this.codeiter = -1;
+    this._prevAlive = null;
+    this._nextAlive = null;
     this.inrefs = new Array<Varnode | null>(s);
     for (let i = 0; i < s; ++i) {
       this.inrefs[i] = null;
@@ -1405,8 +1411,14 @@ export class PcodeOpBank {
   private _probe: PcodeOp = new PcodeOp(0, new SeqNum(new Address(null as any, 0n), 0));
   /** List of dead PcodeOps */
   private deadlist: PcodeOp[] = [];
-  /** List of alive PcodeOps */
-  private alivelist: PcodeOp[] = [];
+  /** Head of alive linked list */
+  private _aliveHead: PcodeOp | null = null;
+  /** Tail of alive linked list */
+  private _aliveTail: PcodeOp | null = null;
+  /** Number of alive ops */
+  private _aliveCount: number = 0;
+  /** Cached alive list array (invalidated on modification) */
+  private _aliveCache: PcodeOp[] | null = null;
   /** List of STORE PcodeOps */
   private storelist: PcodeOp[] = [];
   /** List of LOAD PcodeOps */
@@ -1505,7 +1517,10 @@ export class PcodeOpBank {
   /** Clear all PcodeOps from this container */
   clear(): void {
     this.optree.clear();
-    this.alivelist.length = 0;
+    this._aliveHead = null;
+    this._aliveTail = null;
+    this._aliveCount = 0;
+    this._aliveCache = null;
     this.deadlist.length = 0;
     this.clearCodeLists();
     this.deadandgone.length = 0;
@@ -1591,8 +1606,7 @@ export class PcodeOpBank {
   markAlive(op: PcodeOp): void {
     this._removeFromDeadList(op);
     op.clearFlag(PcodeOp.dead);
-    op.insertiter = this.alivelist.length;
-    this.alivelist.push(op);
+    this._addToAliveList(op);
   }
 
   /**
@@ -1734,10 +1748,10 @@ export class PcodeOpBank {
   beginAlive(): number { return 0; }
 
   /** End of all PcodeOps marked as alive */
-  endAlive(): number { return this.alivelist.length; }
+  endAlive(): number { return this._aliveCount; }
 
   /** Get alive op at index */
-  getAliveOp(idx: number): PcodeOp { return this.alivelist[idx]; }
+  getAliveOp(idx: number): PcodeOp { return this.getAliveList()[idx]; }
 
   /** Start of all PcodeOps marked as dead */
   beginDead(): number { return 0; }
@@ -1764,8 +1778,18 @@ export class PcodeOpBank {
     }
   }
 
-  /** Get the alive list */
-  getAliveList(): PcodeOp[] { return this.alivelist; }
+  /** Get the alive list (built from linked list, cached) */
+  getAliveList(): PcodeOp[] {
+    if (this._aliveCache !== null) return this._aliveCache;
+    const arr: PcodeOp[] = [];
+    let cur = this._aliveHead;
+    while (cur !== null) {
+      arr.push(cur);
+      cur = cur._nextAlive;
+    }
+    this._aliveCache = arr;
+    return arr;
+  }
 
   /**
    * Get a view of all ops in the optree, sorted by SeqNum.
@@ -1789,16 +1813,38 @@ export class PcodeOpBank {
     }
   }
 
-  /** Remove op from alive list and fix indices */
-  private _removeFromAliveList(op: PcodeOp): void {
-    const idx = op.insertiter;
-    if (idx >= 0 && idx < this.alivelist.length && this.alivelist[idx] === op) {
-      this.alivelist.splice(idx, 1);
-      // Fix insertiter for remaining ops
-      for (let i = idx; i < this.alivelist.length; ++i) {
-        this.alivelist[i].insertiter = i;
-      }
+  /** Add op to alive linked list (append to tail) */
+  private _addToAliveList(op: PcodeOp): void {
+    op._prevAlive = this._aliveTail;
+    op._nextAlive = null;
+    if (this._aliveTail !== null) {
+      this._aliveTail._nextAlive = op;
+    } else {
+      this._aliveHead = op;
     }
+    this._aliveTail = op;
+    this._aliveCount++;
+    this._aliveCache = null;
+  }
+
+  /** Remove op from alive linked list O(1) */
+  private _removeFromAliveList(op: PcodeOp): void {
+    const prev = op._prevAlive;
+    const next = op._nextAlive;
+    if (prev !== null) {
+      prev._nextAlive = next;
+    } else {
+      this._aliveHead = next;
+    }
+    if (next !== null) {
+      next._prevAlive = prev;
+    } else {
+      this._aliveTail = prev;
+    }
+    op._prevAlive = null;
+    op._nextAlive = null;
+    this._aliveCount--;
+    this._aliveCache = null;
   }
 
   /** Re-index insertiter values in the dead list starting from given index */
