@@ -11,7 +11,7 @@ import { AddrSpace, spacetype } from '../core/space.js';
 import { OpCode, get_booleanflip } from '../core/opcodes.js';
 import { VarnodeData } from '../core/pcoderaw.js';
 import { calc_mask, calc_int_min, calc_int_max, calc_uint_max } from '../core/address.js';
-import { SortedSetIterator } from '../util/sorted-set.js';
+import { SortedSetIterator, SortedSet } from '../util/sorted-set.js';
 import {
   Varnode,
   VarnodeBank,
@@ -685,27 +685,25 @@ export class Funcdata {
     return [new ListIter(filtered, 0), new ListIter(filtered, filtered.length)];
   }
 
-  /// Start of PcodeOp objects with the given op-code, or at/after given address
-  beginOp(opcOrAddr: OpCode | Address): ListIter<PcodeOp> {
+  /// Start of PcodeOp objects with the given op-code
+  beginOp(opc: OpCode): ListIter<PcodeOp>;
+  /// Start of PcodeOp objects at/after given address (SortedSet iterator)
+  beginOp(addr: Address): SortedSetIterator<PcodeOp>;
+  beginOp(opcOrAddr: OpCode | Address): ListIter<PcodeOp> | SortedSetIterator<PcodeOp> {
     if (typeof opcOrAddr === 'object' && opcOrAddr !== null && typeof (opcOrAddr as any).getOffset === 'function') {
-      // Address overload: find first alive op at or after this address
-      // Use the optree (sorted by SeqNum) for correct ordering
-      const addr = opcOrAddr as Address;
-      const idx = this.obank.beginAtAddr(addr);
-      return new ListIter(this.obank.getOpTreeView(), idx);
+      return this.obank.beginAtAddr(opcOrAddr as Address);
     }
     const list = this.obank.getCodeList(opcOrAddr as OpCode);
     return new ListIter(list, 0);
   }
 
-  /// End of PcodeOp objects with the given op-code, or strictly after given address
-  endOp(opcOrAddr: OpCode | Address): ListIter<PcodeOp> {
+  /// End of PcodeOp objects with the given op-code
+  endOp(opc: OpCode): ListIter<PcodeOp>;
+  /// End of PcodeOp objects strictly after given address (SortedSet iterator)
+  endOp(addr: Address): SortedSetIterator<PcodeOp>;
+  endOp(opcOrAddr: OpCode | Address): ListIter<PcodeOp> | SortedSetIterator<PcodeOp> {
     if (typeof opcOrAddr === 'object' && opcOrAddr !== null && typeof (opcOrAddr as any).getOffset === 'function') {
-      // Address overload: find first alive op strictly after this address
-      // Use the optree (sorted by SeqNum) for correct ordering
-      const addr = opcOrAddr as Address;
-      const idx = this.obank.endAtAddr(addr);
-      return new ListIter(this.obank.getOpTreeView(), idx);
+      return this.obank.endAtAddr(opcOrAddr as Address);
     }
     const list = this.obank.getCodeList(opcOrAddr as OpCode);
     return new ListIter(list, list.length);
@@ -736,15 +734,13 @@ export class Funcdata {
   }
 
   /// Start of all (alive) PcodeOp objects sorted by sequence number
-  beginOpAll(): ListIter<PcodeOp> {
-    const view = this.obank.getOpTreeView();
-    return new ListIter(view, 0);
+  beginOpAll(): SortedSetIterator<PcodeOp> {
+    return this.obank.beginAll();
   }
 
   /// End of all (alive) PcodeOp objects sorted by sequence number
-  endOpAll(): ListIter<PcodeOp> {
-    const view = this.obank.getOpTreeView();
-    return new ListIter(view, view.length);
+  endOpAll(): SortedSetIterator<PcodeOp> {
+    return this.obank.endAll();
   }
 
   /// Get an iterable of PcodeOp objects matching the given op-code
@@ -793,10 +789,10 @@ export class Funcdata {
   }
 
   /// Start of all (alive) PcodeOp objects attached to a specific Address
-  beginOpAddr(addr: Address): IterableIterator<[SeqNum, PcodeOp]> { return (this.obank as any).beginAtAddr(addr); }
+  beginOpAddr(addr: Address): SortedSetIterator<PcodeOp> { return this.obank.beginAtAddr(addr); }
 
   /// End of all (alive) PcodeOp objects attached to a specific Address
-  endOpAddr(addr: Address): IterableIterator<[SeqNum, PcodeOp]> { return (this.obank as any).endAtAddr(addr); }
+  endOpAddr(addr: Address): SortedSetIterator<PcodeOp> { return this.obank.endAtAddr(addr); }
 
   // ---- Jump-table routines (inline accessors) ----
 
@@ -3007,11 +3003,10 @@ export class Funcdata {
   /// For machine instructions that branch, this finds the primary PcodeOp that performs
   /// the branch. The instruction is provided as a list of p-code ops, and the caller can
   /// specify whether they expect to see a branch, call, or return operation.
-  static findPrimaryBranch(startIdx: number, endIdx: number, obank: PcodeOpBank,
+  static findPrimaryBranch(iter: SortedSetIterator<PcodeOp>, endIter: SortedSetIterator<PcodeOp>,
                            findbranch: boolean, findcall: boolean, findreturn: boolean): PcodeOp | null {
-    for (let idx = startIdx; idx < endIdx; idx++) {
-      const op = obank.getOpAtIndex(idx);
-      if (op === null) continue;
+    for (; !iter.equals(endIter); iter.next()) {
+      const op = iter.value;
       switch (op.code()) {
         case OpCode.CPUI_BRANCH:
         case OpCode.CPUI_CBRANCH:
@@ -3042,18 +3037,17 @@ export class Funcdata {
   /// P-code in this function is modified to change the control-flow of
   /// the instruction at the given address, based on the Override type.
   overrideFlow(addr: Address, type: number): void {
-    const startIdx = this.obank.beginAtAddr(addr);
-    const endIdx = this.obank.endAtAddr(addr);
+    const endIter = this.obank.endAtAddr(addr);
 
     let op: PcodeOp | null = null;
     if (type === Override.BRANCH) {
-      op = Funcdata.findPrimaryBranch(startIdx, endIdx, this.obank, false, true, true);
+      op = Funcdata.findPrimaryBranch(this.obank.beginAtAddr(addr), endIter, false, true, true);
     } else if (type === Override.CALL) {
-      op = Funcdata.findPrimaryBranch(startIdx, endIdx, this.obank, true, false, true);
+      op = Funcdata.findPrimaryBranch(this.obank.beginAtAddr(addr), endIter, true, false, true);
     } else if (type === Override.CALL_RETURN) {
-      op = Funcdata.findPrimaryBranch(startIdx, endIdx, this.obank, true, true, true);
+      op = Funcdata.findPrimaryBranch(this.obank.beginAtAddr(addr), endIter, true, true, true);
     } else if (type === Override.RETURN) {
-      op = Funcdata.findPrimaryBranch(startIdx, endIdx, this.obank, true, true, false);
+      op = Funcdata.findPrimaryBranch(this.obank.beginAtAddr(addr), endIter, true, true, false);
     }
 
     if (op === null || !op.isDead()) {

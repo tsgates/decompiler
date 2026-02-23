@@ -1043,7 +1043,7 @@ export class ActionPool extends Action {
       this.op_state = data.beginOpAll();
       this.rule_index = 0;
     }
-    while (!this.op_state.isEnd()) {
+    while (!this.op_state.isEnd) {
       const op = this.op_state.get();
       if (this.processOp(op, data) !== 0) return -1;
     }
@@ -1103,7 +1103,7 @@ export class ActionPool extends Action {
   printState(s: { write(s: string): void }): void {
     super.printState(s);
     if (this.status === Action.status_mid) {
-      if (this.op_state !== null && !this.op_state.isEnd()) {
+      if (this.op_state !== null && !this.op_state.isEnd) {
         const op = this.op_state.get();
         s.write(' ' + op.getSeqNum().toString());
       }

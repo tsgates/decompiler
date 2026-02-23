@@ -72,13 +72,13 @@ const FuncCallSpecs_offset_unknown = 0xBADBEEF;
 
 // ---- VariableStack ----
 // In C++ this is map<Address, vector<Varnode*>> using Address::operator< for comparison.
-// In JS, Map uses reference identity for object keys, so we use a string key instead.
-export type VariableStack = Map<string, Varnode[]>;
+// We use a bigint composite key: (spaceIndex+1) << 64 | offset, avoiding string allocation.
+export type VariableStack = Map<bigint, Varnode[]>;
 
-/** Convert an Address to a string key for use in VariableStack */
-function addrKey(addr: Address): string {
-  const spc = addr.getSpace();
-  return spc === null ? `-1:${addr.getOffset()}` : `${spc.getIndex()}:${addr.getOffset()}`;
+/** Convert an Address to a numeric key for use in VariableStack */
+function addrKey(addr: Address): bigint {
+  const idx = addr.getSpace()?.getIndex() ?? -1;
+  return (BigInt(idx + 1) << 64n) | addr.getOffset();
 }
 
 // ============================================================================
@@ -2611,107 +2611,127 @@ export class Heritage {
    * @param bl - current basic block in the dominance tree walk
    * @param varstack - system of stacks, organized by address
    */
-  renameRecurse(bl: BlockBasic, varstack: VariableStack): void {
-    const writelist: Varnode[] = []; // List varnodes that are written in this block
-    let subbl: BlockBasic;
-    let op: PcodeOp;
-    let multiop: PcodeOp;
-    let vnout: Varnode | null;
-    let vnin: Varnode;
-    let vnnew: Varnode;
-    let i: number;
-    let slot: number;
+  renameRecurse(startbl: BlockBasic, varstack: VariableStack): void {
+    // Iterative DFS through dominator tree using explicit stack.
+    // Each frame: [block, childIndex, writelist]
+    //   - When childIndex === -1, we process the block (pre-visit)
+    //   - When childIndex >= 0, we advance to the next dominator child
+    //   - When all children done, we pop writes (post-visit)
+    const callStack: [BlockBasic, number, Varnode[]][] = [[startbl, -1, []]];
 
-    for (let oiter = bl.beginOp(); !oiter.equals(bl.endOp()); oiter.next()) {
-      op = oiter.get();
-      if (op.code() !== CPUI_MULTIEQUAL) {
-        // First replace reads with top of stack
-        for (slot = 0; slot < op.numInput(); ++slot) {
-          vnin = op.getIn(slot)!;
-          if (vnin.isHeritageKnown()) continue; // not free
-          if (!vnin.isActiveHeritage()) continue; // Not being heritaged this round
-          vnin.clearActiveHeritage();
-          const rkey = addrKey(vnin.getAddr());
-          let stack: Varnode[] | undefined = varstack.get(rkey);
-          if (stack === undefined) {
-            stack = [];
-            varstack.set(rkey, stack);
-          }
-          if (stack.length === 0) {
-            vnnew = this.fd.newVarnode(vnin.getSize(), vnin.getAddr());
-            vnnew = this.fd.setInputVarnode(vnnew);
-            stack.push(vnnew);
-          } else {
-            vnnew = stack[stack.length - 1];
-          }
-          // INDIRECTs and their op really happen AT SAME TIME
-          if (vnnew.isWritten() && (vnnew.getDef().code() === CPUI_INDIRECT)) {
-            if (PcodeOp.getOpFromConst(vnnew.getDef().getIn(1).getAddr()) === op) {
-              if (stack.length === 1) {
+    while (callStack.length > 0) {
+      const frame = callStack[callStack.length - 1];
+      const bl = frame[0];
+      let childIdx = frame[1];
+      const writelist = frame[2];
+
+      if (childIdx === -1) {
+        // Pre-visit: process this block's ops
+        let op: PcodeOp;
+        let vnout: Varnode | null;
+        let vnin: Varnode;
+        let vnnew: Varnode;
+        let slot: number;
+
+        for (let oiter = bl.beginOp(); !oiter.equals(bl.endOp()); oiter.next()) {
+          op = oiter.get();
+          if (op.code() !== CPUI_MULTIEQUAL) {
+            for (slot = 0; slot < op.numInput(); ++slot) {
+              vnin = op.getIn(slot)!;
+              if (vnin.isHeritageKnown()) continue;
+              if (!vnin.isActiveHeritage()) continue;
+              vnin.clearActiveHeritage();
+              const rkey = addrKey(vnin.getAddr());
+              let stack: Varnode[] | undefined = varstack.get(rkey);
+              if (stack === undefined) {
+                stack = [];
+                varstack.set(rkey, stack);
+              }
+              if (stack.length === 0) {
                 vnnew = this.fd.newVarnode(vnin.getSize(), vnin.getAddr());
                 vnnew = this.fd.setInputVarnode(vnnew);
-                stack.splice(0, 0, vnnew);
+                stack.push(vnnew);
               } else {
-                vnnew = stack[stack.length - 2];
+                vnnew = stack[stack.length - 1];
               }
+              if (vnnew.isWritten() && (vnnew.getDef().code() === CPUI_INDIRECT)) {
+                if (PcodeOp.getOpFromConst(vnnew.getDef().getIn(1).getAddr()) === op) {
+                  if (stack.length === 1) {
+                    vnnew = this.fd.newVarnode(vnin.getSize(), vnin.getAddr());
+                    vnnew = this.fd.setInputVarnode(vnnew);
+                    stack.splice(0, 0, vnnew);
+                  } else {
+                    vnnew = stack[stack.length - 2];
+                  }
+                }
+              }
+              this.fd.opSetInput(op, vnnew, slot);
+              if (vnin.hasNoDescend())
+                this.fd.deleteVarnode(vnin);
             }
           }
-          this.fd.opSetInput(op, vnnew, slot);
-          if (vnin.hasNoDescend())
-            this.fd.deleteVarnode(vnin);
-        }
-      }
-      // Then push writes onto stack
-      vnout = op.getOut();
-      if (vnout === null) continue;
-      if (!vnout.isActiveHeritage()) continue; // Not a normalized write
-      vnout.clearActiveHeritage();
-      const wkey = addrKey(vnout.getAddr());
-      let wstack: Varnode[] | undefined = varstack.get(wkey);
-      if (wstack === undefined) {
-        wstack = [];
-        varstack.set(wkey, wstack);
-      }
-      wstack.push(vnout); // Push write onto stack
-      writelist.push(vnout);
-    }
-    for (i = 0; i < bl.sizeOut(); ++i) {
-      subbl = bl.getOut(i) as BlockBasic;
-      slot = bl.getOutRevIndex(i);
-      for (let suboiter = subbl.beginOp(); !suboiter.equals(subbl.endOp()); suboiter.next()) {
-        multiop = suboiter.get();
-        if (multiop.code() !== CPUI_MULTIEQUAL) break; // For each MULTIEQUAL
-        vnin = multiop.getIn(slot)!;
-        if (!vnin.isHeritageKnown()) {
-          const mkey = addrKey(vnin.getAddr());
-          let stack: Varnode[] | undefined = varstack.get(mkey);
-          if (stack === undefined) {
-            stack = [];
-            varstack.set(mkey, stack);
+          vnout = op.getOut();
+          if (vnout === null) continue;
+          if (!vnout.isActiveHeritage()) continue;
+          vnout.clearActiveHeritage();
+          const wkey = addrKey(vnout.getAddr());
+          let wstack: Varnode[] | undefined = varstack.get(wkey);
+          if (wstack === undefined) {
+            wstack = [];
+            varstack.set(wkey, wstack);
           }
-          if (stack.length === 0) {
-            vnnew = this.fd.newVarnode(vnin.getSize(), vnin.getAddr());
-            vnnew = this.fd.setInputVarnode(vnnew);
-            stack.push(vnnew);
-          } else {
-            vnnew = stack[stack.length - 1];
-          }
-          this.fd.opSetInput(multiop, vnnew, slot);
-          if (vnin.hasNoDescend())
-            this.fd.deleteVarnode(vnin);
+          wstack.push(vnout);
+          writelist.push(vnout);
         }
+        // Process MULTIEQUAL inputs in successor blocks
+        for (let i = 0; i < bl.sizeOut(); ++i) {
+          const subbl = bl.getOut(i) as BlockBasic;
+          slot = bl.getOutRevIndex(i);
+          for (let suboiter = subbl.beginOp(); !suboiter.equals(subbl.endOp()); suboiter.next()) {
+            const multiop = suboiter.get();
+            if (multiop.code() !== CPUI_MULTIEQUAL) break;
+            vnin = multiop.getIn(slot)!;
+            if (!vnin.isHeritageKnown()) {
+              const mkey = addrKey(vnin.getAddr());
+              let stack: Varnode[] | undefined = varstack.get(mkey);
+              if (stack === undefined) {
+                stack = [];
+                varstack.set(mkey, stack);
+              }
+              if (stack.length === 0) {
+                vnnew = this.fd.newVarnode(vnin.getSize(), vnin.getAddr());
+                vnnew = this.fd.setInputVarnode(vnnew);
+                stack.push(vnnew);
+              } else {
+                vnnew = stack[stack.length - 1];
+              }
+              this.fd.opSetInput(multiop, vnnew, slot);
+              if (vnin.hasNoDescend())
+                this.fd.deleteVarnode(vnin);
+            }
+          }
+        }
+        frame[1] = 0; // Move to child processing phase
+        continue;
       }
-    }
-    // Now we recurse to subtrees
-    i = bl.getIndex();
-    for (slot = 0; slot < this.domchild[i].length; ++slot)
-      this.renameRecurse(this.domchild[i][slot] as BlockBasic, varstack);
-    // Now we pop this block's writes off the stack
-    for (i = 0; i < writelist.length; ++i) {
-      vnout = writelist[i];
-      const popStack = varstack.get(addrKey(vnout.getAddr()));
-      if (popStack !== undefined)
-        popStack.pop();
+
+      // Child processing phase
+      const blIndex = bl.getIndex();
+      const children = this.domchild[blIndex];
+      if (childIdx < children.length) {
+        frame[1] = childIdx + 1; // Advance to next child for when we return
+        callStack.push([children[childIdx] as BlockBasic, -1, []]);
+        continue;
+      }
+
+      // Post-visit: pop this block's writes off the stack
+      for (let i = 0; i < writelist.length; ++i) {
+        const vnout = writelist[i];
+        const popStack = varstack.get(addrKey(vnout.getAddr()));
+        if (popStack !== undefined)
+          popStack.pop();
+      }
+      callStack.pop();
     }
   }
 
@@ -2787,7 +2807,7 @@ export class Heritage {
    * Phi-node placement must already have happened.
    */
   rename(): void {
-    const varstack: VariableStack = new Map<string, Varnode[]>();
+    const varstack: VariableStack = new Map<bigint, Varnode[]>();
     this.renameRecurse(this.fd.getBasicBlocks().getBlock(0) as BlockBasic, varstack);
     this.disjoint.clear();
   }

@@ -27,6 +27,7 @@ import { ATTRIB_CODE, ELEM_SPACEID } from '../core/translate.js';
 import { ELEM_OP } from '../decompiler/prettyprint.js';
 import { ELEM_ADDR } from '../decompiler/varnode.js';
 import type { Writer } from '../util/writer.js';
+import { SortedSet, SortedSetIterator } from '../util/sorted-set.js';
 import { Varnode } from './varnode.js';
 
 // ---------------------------------------------------------------------------
@@ -1372,17 +1373,20 @@ export class PieceNode {
 // ---------------------------------------------------------------------------
 
 /**
- * A key type for the sorted PcodeOp tree. We serialize SeqNum into a string
- * that sorts correctly: space_index padded + offset padded + uniq padded.
+ * Comparator for PcodeOps sorted by SeqNum (space index, offset, time).
+ * Replaces the old string-based seqNumKey() with direct numeric comparison.
  */
-function seqNumKey(sq: SeqNum): string {
-  const addr = sq.getAddr();
-  const spaceIdx = addr.getSpace() !== null ? addr.getSpace()!.getIndex() : -1;
-  // Pad space index to 10 digits, offset to 20 hex digits, uniq to 10 digits
-  const s = String(spaceIdx).padStart(10, '0');
-  const o = addr.getOffset().toString(16).padStart(20, '0');
-  const u = String(sq.getTime()).padStart(10, '0');
-  return `${s}:${o}:${u}`;
+export function seqNumCompare(a: PcodeOp, b: PcodeOp): number {
+  const aAddr = a.getSeqNum().getAddr();
+  const bAddr = b.getSeqNum().getAddr();
+  const aIdx = aAddr.getSpace()?.getIndex() ?? -1;
+  const bIdx = bAddr.getSpace()?.getIndex() ?? -1;
+  if (aIdx !== bIdx) return aIdx - bIdx;
+  const aOff = aAddr.getOffset();
+  const bOff = bAddr.getOffset();
+  if (aOff < bOff) return -1;
+  if (aOff > bOff) return 1;
+  return a.getSeqNum().getTime() - b.getSeqNum().getTime();
 }
 
 /**
@@ -1390,16 +1394,15 @@ function seqNumKey(sq: SeqNum): string {
  *
  * The PcodeOp objects are maintained under multiple different sorting criteria to
  * facilitate quick access in various situations. The main sort is by
- * sequence number (SeqNum). PcodeOps are also grouped into alive and dead lists
+ * sequence number (SeqNum) using a red-black tree (SortedSet) for O(log n) operations.
+ * PcodeOps are also grouped into alive and dead lists
  * to distinguish between raw p-code ops and those that are fully linked into control-flow.
  */
 export class PcodeOpBank {
-  /** The main sequence number sort: key -> PcodeOp */
-  private optree: Map<string, PcodeOp> = new Map();
-  /** Sorted keys array for ordered iteration */
-  private optreeKeys: string[] = [];
-  /** Cached sorted view of ops from optree; invalidated on tree changes */
-  private optreeViewCache: PcodeOp[] | null = null;
+  /** The main sequence number sort: SortedSet<PcodeOp> with seqNumCompare */
+  private optree: SortedSet<PcodeOp> = new SortedSet<PcodeOp>(seqNumCompare);
+  /** Reusable probe PcodeOp for SortedSet lookups (avoids allocation) */
+  private _probe: PcodeOp = new PcodeOp(0, new SeqNum(new Address(null as any, 0n), 0));
   /** List of dead PcodeOps */
   private deadlist: PcodeOp[] = [];
   /** List of alive PcodeOps */
@@ -1422,6 +1425,16 @@ export class PcodeOpBank {
   }
 
   // ---- Internal methods ----
+
+  /** Set the probe PcodeOp's SeqNum for lookups */
+  private _setProbe(addr: Address, time: number): void {
+    this._probe.start = new SeqNum(addr, time);
+  }
+
+  /** Set the probe PcodeOp's SeqNum from an existing SeqNum */
+  private _setProbeSeqNum(sq: SeqNum): void {
+    this._probe.start = sq;
+  }
 
   /** Add given PcodeOp to specific op-code list */
   private addToCodeList(op: PcodeOp): void {
@@ -1487,41 +1500,11 @@ export class PcodeOpBank {
     this.useroplist.length = 0;
   }
 
-  /** Insert a key into optreeKeys in sorted order */
-  private insertKey(key: string): void {
-    let lo = 0;
-    let hi = this.optreeKeys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.optreeKeys[mid] < key) lo = mid + 1;
-      else hi = mid;
-    }
-    this.optreeKeys.splice(lo, 0, key);
-    this.optreeViewCache = null;
-  }
-
-  /** Remove a key from optreeKeys */
-  private removeKey(key: string): void {
-    let lo = 0;
-    let hi = this.optreeKeys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.optreeKeys[mid] < key) lo = mid + 1;
-      else hi = mid;
-    }
-    if (lo < this.optreeKeys.length && this.optreeKeys[lo] === key) {
-      this.optreeKeys.splice(lo, 1);
-    }
-    this.optreeViewCache = null;
-  }
-
   // ---- Public methods ----
 
   /** Clear all PcodeOps from this container */
   clear(): void {
     this.optree.clear();
-    this.optreeKeys.length = 0;
-    this.optreeViewCache = null;
     this.alivelist.length = 0;
     this.deadlist.length = 0;
     this.clearCodeLists();
@@ -1542,9 +1525,7 @@ export class PcodeOpBank {
    */
   createFromAddr(inputs: number, pc: Address): PcodeOp {
     const op = new PcodeOp(inputs, new SeqNum(pc, this.uniqid++));
-    const key = seqNumKey(op.getSeqNum());
-    this.optree.set(key, op);
-    this.insertKey(key);
+    this.optree.insert(op);
     op.setFlag(PcodeOp.dead);
     op.insertiter = this.deadlist.length;
     this.deadlist.push(op);
@@ -1560,9 +1541,7 @@ export class PcodeOpBank {
     if (sq.getTime() >= this.uniqid)
       this.uniqid = sq.getTime() + 1;
 
-    const key = seqNumKey(op.getSeqNum());
-    this.optree.set(key, op);
-    this.insertKey(key);
+    this.optree.insert(op);
     op.setFlag(PcodeOp.dead);
     op.insertiter = this.deadlist.length;
     this.deadlist.push(op);
@@ -1578,9 +1557,7 @@ export class PcodeOpBank {
     if (!op.isDead())
       throw new LowlevelError("Deleting integrated op");
 
-    const key = seqNumKey(op.getSeqNum());
-    this.optree.delete(key);
-    this.removeKey(key);
+    this.optree.eraseValue(op);
     this._removeFromDeadList(op);
     this.removeFromCodeList(op);
     this.deadandgone.push(op);
@@ -1636,9 +1613,9 @@ export class PcodeOpBank {
     if (!op.isDead() || !prev.isDead())
       throw new LowlevelError("Dead move called on ops which aren't dead");
     this._removeFromDeadList(op);
-    const prevIdx = this.deadlist.indexOf(prev);
+    const prevIdx = prev.insertiter;
     this.deadlist.splice(prevIdx + 1, 0, op);
-    this._reindexDeadList();
+    this._reindexDeadList(prevIdx + 1);
   }
 
   /**
@@ -1646,25 +1623,25 @@ export class PcodeOpBank {
    * The point is right after a provided op. All ops must be in the dead list.
    */
   moveSequenceDead(firstop: PcodeOp, lastop: PcodeOp, prev: PcodeOp): void {
-    const firstIdx = this.deadlist.indexOf(firstop);
-    const lastIdx = this.deadlist.indexOf(lastop);
-    const prevIdx = this.deadlist.indexOf(prev);
+    const firstIdx = firstop.insertiter;
+    const lastIdx = lastop.insertiter;
+    const prevIdx = prev.insertiter;
     if (prevIdx + 1 === firstIdx) return; // Degenerate move
 
     // Extract the sequence
     const sequence = this.deadlist.splice(firstIdx, lastIdx - firstIdx + 1);
     // Find new insertion point (prevIdx may have shifted)
-    const newPrevIdx = this.deadlist.indexOf(prev);
+    const newPrevIdx = prev.insertiter < firstIdx ? prev.insertiter : prev.insertiter - sequence.length;
     this.deadlist.splice(newPrevIdx + 1, 0, ...sequence);
-    this._reindexDeadList();
+    this._reindexDeadList(0);
   }
 
   /**
    * Mark any COPY ops in the given range as incidental.
    */
   markIncidentalCopy(firstop: PcodeOp, lastop: PcodeOp): void {
-    const firstIdx = this.deadlist.indexOf(firstop);
-    const lastIdx = this.deadlist.indexOf(lastop);
+    const firstIdx = firstop.insertiter;
+    const lastIdx = lastop.insertiter;
     for (let i = firstIdx; i <= lastIdx; ++i) {
       const op = this.deadlist[i];
       if (op.code() === OpCode.CPUI_COPY)
@@ -1673,7 +1650,7 @@ export class PcodeOpBank {
   }
 
   /** Return true if there are no PcodeOps in this container */
-  empty(): boolean { return this.optree.size === 0; }
+  empty(): boolean { return this.optree.empty; }
 
   /**
    * Find the first executing PcodeOp for a target address.
@@ -1681,26 +1658,19 @@ export class PcodeOpBank {
    * yet been broken up into basic blocks. Take into account delay slots.
    */
   target(addr: Address): PcodeOp | null {
-    const targetKey = seqNumKey(new SeqNum(addr, 0));
-    // Lower bound: find first key >= targetKey
-    let lo = 0;
-    let hi = this.optreeKeys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.optreeKeys[mid] < targetKey) lo = mid + 1;
-      else hi = mid;
-    }
-    if (lo >= this.optreeKeys.length) return null;
-    const op = this.optree.get(this.optreeKeys[lo])!;
-    return op.targetFromDead(this.deadlist);
+    this._setProbe(addr, 0);
+    const it = this.optree.lower_bound(this._probe);
+    if (it.isEnd) return null;
+    return it.value.targetFromDead(this.deadlist);
   }
 
   /**
    * Find a PcodeOp by sequence number.
    */
   findOp(num: SeqNum): PcodeOp | null {
-    const key = seqNumKey(num);
-    return this.optree.get(key) ?? null;
+    this._setProbeSeqNum(num);
+    const it = this.optree.find(this._probe);
+    return it.isEnd ? null : it.value;
   }
 
   /**
@@ -1725,61 +1695,40 @@ export class PcodeOpBank {
         if (max.lessThan(this.deadlist[i].getSeqNum()))
           max = this.deadlist[i].getSeqNum();
       }
-      // upper_bound on max
-      const maxKey = seqNumKey(max);
-      let lo2 = 0;
-      let hi2 = this.optreeKeys.length;
-      while (lo2 < hi2) {
-        const mid = (lo2 + hi2) >>> 1;
-        if (this.optreeKeys[mid] <= maxKey) lo2 = mid + 1;
-        else hi2 = mid;
-      }
-      if (lo2 >= this.optreeKeys.length) return null;
-      return this.optree.get(this.optreeKeys[lo2])!;
+      // upper_bound on max SeqNum
+      this._setProbeSeqNum(max);
+      const it = this.optree.upper_bound(this._probe);
+      if (it.isEnd) return null;
+      return it.value;
     } else {
       return op.nextOp();
     }
   }
 
   /** Start of all PcodeOps in sequence number order */
-  beginAll(): IterableIterator<[string, PcodeOp]> {
-    return this._iterateAll(0);
+  beginAll(): SortedSetIterator<PcodeOp> {
+    return this.optree.begin();
+  }
+
+  /** End sentinel for all PcodeOps */
+  endAll(): SortedSetIterator<PcodeOp> {
+    return this.optree.end();
   }
 
   /** Start of all PcodeOps at one Address (lower_bound) */
-  beginAtAddr(addr: Address): number {
-    const targetKey = seqNumKey(new SeqNum(addr, 0));
-    let lo = 0;
-    let hi = this.optreeKeys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.optreeKeys[mid] < targetKey) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
+  beginAtAddr(addr: Address): SortedSetIterator<PcodeOp> {
+    this._setProbe(addr, 0);
+    return this.optree.lower_bound(this._probe);
   }
 
-  /** End of all PcodeOps at one Address (upper_bound) */
-  endAtAddr(addr: Address): number {
-    const targetKey = seqNumKey(new SeqNum(addr, 0xFFFFFFFF));
-    let lo = 0;
-    let hi = this.optreeKeys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.optreeKeys[mid] <= targetKey) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  }
-
-  /** Get PcodeOp at sorted index in the optree */
-  getOpAtIndex(idx: number): PcodeOp | null {
-    if (idx < 0 || idx >= this.optreeKeys.length) return null;
-    return this.optree.get(this.optreeKeys[idx]) ?? null;
+  /** End of all PcodeOps at one Address (upper_bound past max time) */
+  endAtAddr(addr: Address): SortedSetIterator<PcodeOp> {
+    this._setProbe(addr, 0x7FFFFFFF);
+    return this.optree.upper_bound(this._probe);
   }
 
   /** Get the total number of ops in the optree */
-  getOpTreeSize(): number { return this.optreeKeys.length; }
+  getOpTreeSize(): number { return this.optree.size; }
 
   /** Start of all PcodeOps marked as alive */
   beginAlive(): number { return 0; }
@@ -1819,18 +1768,11 @@ export class PcodeOpBank {
   getAliveList(): PcodeOp[] { return this.alivelist; }
 
   /**
-   * Get a cached view of all ops in the optree, sorted by SeqNum.
-   * The returned array is shared; callers must not mutate it.
+   * Get a view of all ops in the optree, sorted by SeqNum.
+   * Creates a new array by iterating the SortedSet.
    */
   getOpTreeView(): PcodeOp[] {
-    if (this.optreeViewCache === null) {
-      const result: PcodeOp[] = new Array(this.optreeKeys.length);
-      for (let i = 0; i < this.optreeKeys.length; i++) {
-        result[i] = this.optree.get(this.optreeKeys[i])!;
-      }
-      this.optreeViewCache = result;
-    }
-    return this.optreeViewCache;
+    return [...this.optree];
   }
 
   /** Get the dead list */
@@ -1838,19 +1780,19 @@ export class PcodeOpBank {
 
   // ---- Private helpers ----
 
-  /** Remove op from dead list and fix indices */
+  /** Remove op from dead list using insertiter for O(1) lookup, O(n) splice */
   private _removeFromDeadList(op: PcodeOp): void {
-    const idx = this.deadlist.indexOf(op);
-    if (idx >= 0) {
+    const idx = op.insertiter;
+    if (idx >= 0 && idx < this.deadlist.length && this.deadlist[idx] === op) {
       this.deadlist.splice(idx, 1);
-      this._reindexDeadList();
+      this._reindexDeadList(idx);
     }
   }
 
   /** Remove op from alive list and fix indices */
   private _removeFromAliveList(op: PcodeOp): void {
-    const idx = this.alivelist.indexOf(op);
-    if (idx >= 0) {
+    const idx = op.insertiter;
+    if (idx >= 0 && idx < this.alivelist.length && this.alivelist[idx] === op) {
       this.alivelist.splice(idx, 1);
       // Fix insertiter for remaining ops
       for (let i = idx; i < this.alivelist.length; ++i) {
@@ -1859,18 +1801,10 @@ export class PcodeOpBank {
     }
   }
 
-  /** Re-index all insertiter values in the dead list */
-  private _reindexDeadList(): void {
-    for (let i = 0; i < this.deadlist.length; ++i) {
+  /** Re-index insertiter values in the dead list starting from given index */
+  private _reindexDeadList(fromIdx: number = 0): void {
+    for (let i = fromIdx; i < this.deadlist.length; ++i) {
       this.deadlist[i].insertiter = i;
-    }
-  }
-
-  /** Iterate all ops starting from index */
-  private *_iterateAll(startIdx: number): IterableIterator<[string, PcodeOp]> {
-    for (let i = startIdx; i < this.optreeKeys.length; ++i) {
-      const key = this.optreeKeys[i];
-      yield [key, this.optree.get(key)!];
     }
   }
 }

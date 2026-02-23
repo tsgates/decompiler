@@ -5,5 +5,6 @@ export default defineConfig({
     globals: true,
     include: ['test/**/*.test.ts'],
     testTimeout: 30000,
+    pool: 'forks',
   },
 });
