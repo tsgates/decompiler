@@ -53,23 +53,27 @@ export class WorkerParallelDecompiler {
   private workerCount: number;
   private writer: Writer | null;
   private functionNames: string[];
+  private enhancedDisplay: boolean;
 
   /**
    * @param xmlPath path to the XML file containing the binary image and scripts
    * @param sleighPath SLEIGH_PATH for the decompiler library
    * @param workerCount number of child processes (default: cpu count - 1)
    * @param writer optional writer for progress messages
+   * @param enhancedDisplay use standard C types and Ghidra GUI-style globals
    */
   constructor(
     xmlPath: string,
     sleighPath: string,
     workerCount?: number,
     writer?: Writer,
+    enhancedDisplay?: boolean,
   ) {
     this.xmlPath = xmlPath;
     this.sleighPath = sleighPath;
     this.workerCount = workerCount ?? Math.max(1, os.cpus().length - 1);
     this.writer = writer ?? null;
+    this.enhancedDisplay = enhancedDisplay ?? false;
     this.xmlString = fs.readFileSync(xmlPath, 'utf-8');
     this.functionNames = WorkerParallelDecompiler.extractFunctionNames(this.xmlString);
   }
@@ -251,6 +255,7 @@ export class WorkerParallelDecompiler {
           xmlString: this.xmlString,
           sleighPath: this.sleighPath,
           workerId: i,
+          enhancedDisplay: this.enhancedDisplay,
         });
       }
     });

@@ -43,6 +43,19 @@ function doubleToRawBits(f: number): bigint {
   return (BigInt(hi) << 32n) | BigInt(lo);
 }
 
+/**
+ * Compare two float32 encodings, treating NaN sign differences as equal.
+ * x86/ARM hardware produces negative NaN for 0/0 and Inf-Inf (0xFFC00000),
+ * while JavaScript produces positive NaN (0x7FC00000). Both are valid IEEE 754
+ * NaN representations. This helper strips the sign bit when both values are NaN.
+ */
+function nanEquivalent(a: bigint, b: bigint): boolean {
+  if (a === b) return true;
+  // Check if both are NaN (exponent all 1s, fraction non-zero) for float32
+  const isNaN32 = (v: bigint) => ((v & 0x7F800000n) === 0x7F800000n) && ((v & 0x007FFFFFn) !== 0n);
+  return isNaN32(a) && isNaN32(b);
+}
+
 // ---------------------------------------------------------------------------
 // IEEE 754 single-precision special constants
 // ---------------------------------------------------------------------------
@@ -582,7 +595,7 @@ describe('FloatFormat', () => {
           const trueResult = floatToRawBits(Math.fround(f1 + f2));
           const encoding2 = format.getEncoding(f2);
           const result = format.opAdd(encoding1, encoding2);
-          expect(result).toBe(trueResult);
+          expect(nanEquivalent(result, trueResult), `opAdd(${f1}, ${f2}): got 0x${result.toString(16)}, expected 0x${trueResult.toString(16)}`).toBe(true);
         }
       }
     });
@@ -598,7 +611,7 @@ describe('FloatFormat', () => {
           const trueResult = floatToRawBits(Math.fround(f1 / f2));
           const encoding2 = format.getEncoding(f2);
           const result = format.opDiv(encoding1, encoding2);
-          expect(result).toBe(trueResult);
+          expect(nanEquivalent(result, trueResult), `opDiv(${f1}, ${f2}): got 0x${result.toString(16)}, expected 0x${trueResult.toString(16)}`).toBe(true);
         }
       }
     });
@@ -614,7 +627,7 @@ describe('FloatFormat', () => {
           const trueResult = floatToRawBits(Math.fround(f1 * f2));
           const encoding2 = format.getEncoding(f2);
           const result = format.opMult(encoding1, encoding2);
-          expect(result).toBe(trueResult);
+          expect(nanEquivalent(result, trueResult), `opMult(${f1}, ${f2}): got 0x${result.toString(16)}, expected 0x${trueResult.toString(16)}`).toBe(true);
         }
       }
     });
@@ -630,7 +643,7 @@ describe('FloatFormat', () => {
           const trueResult = floatToRawBits(Math.fround(f1 - f2));
           const encoding2 = format.getEncoding(f2);
           const result = format.opSub(encoding1, encoding2);
-          expect(result).toBe(trueResult);
+          expect(nanEquivalent(result, trueResult), `opSub(${f1}, ${f2}): got 0x${result.toString(16)}, expected 0x${trueResult.toString(16)}`).toBe(true);
         }
       }
     });

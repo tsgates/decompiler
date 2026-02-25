@@ -393,6 +393,7 @@ export abstract class Architecture extends AddrSpaceManager {
   alias_block_level: number = 2;
   split_datatype_config: number = 0;
   extra_pool_rules: Rule[] = [];
+  enhancedDisplay: boolean = false;
 
   // Sub-components
   symboltab: any | null = null;
@@ -668,6 +669,15 @@ export abstract class Architecture extends AddrSpaceManager {
       result.scope.addFunction(record.address, result.basename);
     }
     this.loader!.closeSymbols();
+  }
+
+  /**
+   * Enable enhanced display: standard C type names and Ghidra GUI-style globals.
+   */
+  applyEnhancedDisplay(): void {
+    this.enhancedDisplay = true;
+    if (this.types) this.types.applyEnhancedDisplayNames();
+    if (this.print) (this.print as any).setShowAddresses(true);
   }
 
   /**

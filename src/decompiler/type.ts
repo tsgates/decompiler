@@ -3872,6 +3872,39 @@ export class TypeFactory {
   }
 
   /**
+   * Set display names on core types to use standard C / Ghidra GUI conventions.
+   * Only modifies displayName (not name), so internal logic is unaffected.
+   */
+  applyEnhancedDisplayNames(): void {
+    const map: Record<string, string> = {
+      'int1': 'i8',
+      'int2': 'i16',
+      'int4': 'i32',
+      'int8': 'i64',
+      'uint1': 'u8',
+      'uint2': 'u16',
+      'uint4': 'u32',
+      'uint8': 'u64',
+      'xunknown1': 'unk1',
+      'xunknown2': 'unk2',
+      'xunknown4': 'unk4',
+      'xunknown8': 'unk8',
+      'float4': 'f32',
+      'float8': 'f64',
+      'float10': 'f80',
+      'float16': 'f128',
+      'wchar2': 'wchar16',
+      'wchar4': 'wchar32',
+    };
+    for (const ct of this.tree) {
+      const dn = map[ct.name];
+      if (dn !== undefined) {
+        ct.displayName = dn;
+      }
+    }
+  }
+
+  /**
    * Remove all Datatype objects owned by this TypeFactory.
    */
   clear(): void {

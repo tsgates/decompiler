@@ -1,10 +1,12 @@
 /**
  * Run both C++ and TS decompilers on an exported XML and compare per-function.
  *
- * Usage: npx tsx test/run-compare-binary.ts [--workers N] <exported.xml> [output-dir]
+ * Usage: npx tsx test/run-compare-binary.ts [--workers N] [--enhance] [--metrics] <exported.xml> [output-dir]
  *
  * --workers N  Use N worker threads for true multi-core parallelism.
  *              Without this flag, decompilation is sequential (single-threaded).
+ * --enhance    Enable enhanced display mode.
+ * --metrics    Print per-function and aggregate SAILR metrics table.
  */
 import '../src/console/xml_arch.js';
 import { startDecompilerLibrary } from '../src/console/libdecomp.js';
@@ -17,11 +19,17 @@ import path from 'path';
 
 // --- Parse arguments ---
 let numWorkers = 0;
+let enhancedDisplay = false;
+let showMetrics = false;
 const positional: string[] = [];
 for (let i = 2; i < process.argv.length; i++) {
     if (process.argv[i] === '--workers' || process.argv[i] === '-w') {
         i++;
         numWorkers = parseInt(process.argv[i], 10) || 4;
+    } else if (process.argv[i] === '--enhance') {
+        enhancedDisplay = true;
+    } else if (process.argv[i] === '--metrics') {
+        showMetrics = true;
     } else {
         positional.push(process.argv[i]);
     }
@@ -52,7 +60,7 @@ if (numWorkers > 0) {
     const tsStart = performance.now();
 
     const progressWriter = { write: (s: string) => process.stderr.write(s) };
-    const pd = new WorkerParallelDecompiler(xmlFile, SLEIGH_PATH, numWorkers, progressWriter);
+    const pd = new WorkerParallelDecompiler(xmlFile, SLEIGH_PATH, numWorkers, progressWriter, enhancedDisplay);
     console.log(`Found ${pd.getFunctionCount()} functions\n`);
 
     const results = await pd.decompileAll();
@@ -86,6 +94,9 @@ if (numWorkers > 0) {
     const writer = new StringWriter();
     const tc = new FunctionTestCollection(writer);
     tc.loadTest(xmlFile);
+    if (enhancedDisplay) {
+        tc.applyEnhancedDisplay();
+    }
     tc.runTests(failures);
 
     tsElapsed = performance.now() - tsStart;
@@ -260,5 +271,77 @@ if (outputDir) {
     console.log(`  cpp_output.c  — full C++ decompiled output`);
     if (different > 0) {
         console.log(`  diffs/        — per-function diff pairs (${different} functions)`);
+    }
+}
+
+// --- Metrics ---
+if (showMetrics) {
+    function collectTextMetrics(funcMap: Map<string, string>): { name: string; gotos: number; breaks: number; continues: number; depth: number; whiles: number; dos: number; ifs: number; switches: number; labels: number }[] {
+        const results: { name: string; gotos: number; breaks: number; continues: number; depth: number; whiles: number; dos: number; ifs: number; switches: number; labels: number }[] = [];
+        for (const [name, body] of funcMap) {
+            const gotos = (body.match(/\bgoto\s+\w+/g) || []).length;
+            const breaks = (body.match(/\bbreak\s*;/g) || []).length;
+            const continues = (body.match(/\bcontinue\s*;/g) || []).length;
+            const whiles = (body.match(/\bwhile\s*\(/g) || []).length;
+            const dos = (body.match(/\bdo\s*\{/g) || []).length;
+            const ifs = (body.match(/\bif\s*\(/g) || []).length;
+            const switches = (body.match(/\bswitch\s*\(/g) || []).length;
+            const labels = (body.match(/^\s*\w+:/gm) || []).filter(l => !l.match(/^\s*(case|default)\s*:/)).length;
+            // Approximate nesting depth from indentation
+            let maxDepth = 0;
+            let depth = 0;
+            for (const ch of body) {
+                if (ch === '{') depth++;
+                if (ch === '}') depth--;
+                if (depth > maxDepth) maxDepth = depth;
+            }
+            results.push({ name, gotos, breaks, continues, depth: maxDepth, whiles, dos, ifs, switches, labels });
+        }
+        return results.sort((a, b) => b.gotos - a.gotos);
+    }
+
+    function padR(s: string, w: number): string { return s.length >= w ? s.slice(0, w) : s + ' '.repeat(w - s.length); }
+    function padL(s: string, w: number): string { return s.length >= w ? s : ' '.repeat(w - s.length) + s; }
+
+    function printMetricsTable(label: string, funcMap: Map<string, string>): void {
+        const metrics = collectTextMetrics(funcMap);
+        const interesting = metrics.filter(m => m.gotos > 0 || m.depth >= 4);
+        console.log(`\n=== ${label} Metrics ===`);
+        console.log(
+            padR('Function', 40) + padL('Gotos', 7) + padL('Brk', 5) + padL('Cont', 6) +
+            padL('Depth', 7) + padL('While', 7) + padL('Do', 5) + padL('If', 5) +
+            padL('Swi', 5) + padL('Lbl', 5)
+        );
+        console.log('-'.repeat(90));
+        for (const m of interesting) {
+            console.log(
+                padR(m.name, 40) + padL(String(m.gotos), 7) + padL(String(m.breaks), 5) +
+                padL(String(m.continues), 6) + padL(String(m.depth), 7) +
+                padL(String(m.whiles), 7) + padL(String(m.dos), 5) +
+                padL(String(m.ifs), 5) + padL(String(m.switches), 5) +
+                padL(String(m.labels), 5)
+            );
+        }
+        console.log('-'.repeat(90));
+        const totGotos = metrics.reduce((s, m) => s + m.gotos, 0);
+        const totBreaks = metrics.reduce((s, m) => s + m.breaks, 0);
+        const totConts = metrics.reduce((s, m) => s + m.continues, 0);
+        const maxD = metrics.reduce((s, m) => Math.max(s, m.depth), 0);
+        const totW = metrics.reduce((s, m) => s + m.whiles, 0);
+        const totDo = metrics.reduce((s, m) => s + m.dos, 0);
+        const totIf = metrics.reduce((s, m) => s + m.ifs, 0);
+        const totSw = metrics.reduce((s, m) => s + m.switches, 0);
+        const totLbl = metrics.reduce((s, m) => s + m.labels, 0);
+        console.log(
+            padR(`TOTAL (${metrics.length} funcs)`, 40) + padL(String(totGotos), 7) +
+            padL(String(totBreaks), 5) + padL(String(totConts), 6) + padL(String(maxD), 7) +
+            padL(String(totW), 7) + padL(String(totDo), 5) + padL(String(totIf), 5) +
+            padL(String(totSw), 5) + padL(String(totLbl), 5)
+        );
+    }
+
+    printMetricsTable('TS', tsFuncs);
+    if (cppFuncs.size > 0) {
+        printMetricsTable('C++', cppFuncs);
     }
 }

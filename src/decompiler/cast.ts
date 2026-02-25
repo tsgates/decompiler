@@ -379,6 +379,9 @@ export class CastStrategyC extends CastStrategy {
       switch (readOp.code() as OpCode) {
         case OpCode.CPUI_PTRADD:
           break;
+        case OpCode.CPUI_INT_LEFT:
+        case OpCode.CPUI_INT_RIGHT:
+        case OpCode.CPUI_INT_SRIGHT:
         case OpCode.CPUI_INT_ADD:
         case OpCode.CPUI_INT_SUB:
         case OpCode.CPUI_INT_MULT:

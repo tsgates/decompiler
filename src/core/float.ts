@@ -611,9 +611,13 @@ export class FloatFormat {
   }
 
   /**
-   * Force newly-created NaN results to negative NaN (matching x86 C++ behavior).
-   * JavaScript's 0/0 produces positive NaN, but x86 produces negative NaN (sign bit set).
-   * If the result is NaN and neither input was NaN, set the sign bit.
+   * Force newly-created NaN results to negative NaN (matching x86/ARM hardware behavior).
+   * When a non-NaN operation produces NaN (e.g., 0/0, Inf-Inf), x86/ARM hardware sets
+   * the sign bit, producing 0xFFC00000. JavaScript canonicalizes NaN to positive
+   * (0x7FC00000). We match the hardware behavior to stay consistent with the C++ decompiler.
+   *
+   * If either input was already NaN, the result is left unchanged (NaN propagation
+   * preserves the input NaN's sign on hardware).
    */
   private forceNegativeNaN(result: uintb, val1: number, val2: number): uintb {
     if (isNaN(val1) || isNaN(val2)) return result; // Input was already NaN, don't modify

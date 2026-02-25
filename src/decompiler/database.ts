@@ -3101,6 +3101,16 @@ export class ScopeInternal extends Scope {
     return this.queryFunction(sym.getRefAddr());
   }
 
+  private enhancedVarPrefix(ct: Datatype): string {
+    if (ct === null) return '';
+    if (this.getArch().enhancedDisplay && ct.getMetatype() === type_metatype.TYPE_UNKNOWN) {
+      return 'u';  // xunknown → undefined → 'u' (Ghidra GUI parity)
+    }
+    const sw = new StringWriter();
+    ct.printNameBase(sw);
+    return sw.toString();
+  }
+
   buildVariableName(addr: any, pc: any, ct: Datatype, index: { val: number }, flags: number): string {
     const sz = ct === null ? 1 : ct.getSize();
     let s = "";
@@ -3126,6 +3136,23 @@ export class ScopeInternal extends Scope {
       }
       if (spacename.length > 0) {
         s = spacename;
+      } else if (this.getArch().enhancedDisplay) {
+        let prefix = "DAT_";
+        if (ct !== null) {
+          const meta = ct.getMetatype();
+          if (meta === type_metatype.TYPE_PTR) {
+            const baseType = (ct as any).getPtrTo();
+            if (baseType && baseType.isCharPrint())
+              prefix = "STR_";
+            else
+              prefix = "PTR_";
+          } else if (meta === type_metatype.TYPE_CODE) {
+            prefix = "FUNC_";
+          } else if (meta === type_metatype.TYPE_ARRAY) {
+            prefix = "ARR_";
+          }
+        }
+        s = prefix + addr.getOffset().toString(16);
       } else {
         if (ct !== null) { const sw = new StringWriter(); ct.printNameBase(sw); s = sw.toString(); }
         let sname = addr.getSpace().getName();
@@ -3149,7 +3176,7 @@ export class ScopeInternal extends Scope {
       // Regular parameter
       s = "param_" + index.val.toString();
     } else if ((flags & Varnode_addrtied) !== 0) {
-      if (ct !== null) { const sw = new StringWriter(); ct.printNameBase(sw); s = sw.toString(); }
+      if (ct !== null) { s = this.enhancedVarPrefix(ct); }
       const spc = addr.getSpace();
       let spacename = spc.getName();
       spacename = spacename.charAt(0).toUpperCase() + spacename.slice(1);
@@ -3171,14 +3198,14 @@ export class ScopeInternal extends Scope {
       }
     } else {
       // Some sort of local variable
-      if (ct !== null) { const sw = new StringWriter(); ct.printNameBase(sw); s = sw.toString(); }
+      if (ct !== null) { s = this.enhancedVarPrefix(ct); }
       s += "Var" + index.val.toString();
       index.val++;
       if (!this.findFirstByName(s).isEnd) {
         // If the name already exists, bump the index a few times
         for (let i = 0; i < 10; i++) {
           let s2 = "";
-          if (ct !== null) { const sw = new StringWriter(); ct.printNameBase(sw); s2 = sw.toString(); }
+          if (ct !== null) { s2 = this.enhancedVarPrefix(ct); }
           s2 += "Var" + index.val.toString();
           index.val++;
           if (this.findFirstByName(s2).isEnd) {

@@ -402,7 +402,7 @@ export class PreferSplitManager {
     spaceid = this.data!.newConstant(spaceid.getSize(), spaceid.getOffset());
     this.data!.opSetInput(loop, spaceid, 0);
     if (ptrvn.isFree()) // Don't read a free varnode twice
-      ptrvn = this.data!.newVarnode(ptrvn.getSize(), ptrvn.getSpace(), ptrvn.getOffset());
+      ptrvn = this.data!.newVarnodeFromSpaceOffset(ptrvn.getSize(), ptrvn.getSpace(), ptrvn.getOffset());
 
     if (spc.isBigEndian()) {
       this.data!.opSetInput(hiop, ptrvn, 1);
@@ -456,7 +456,7 @@ export class PreferSplitManager {
     this.data!.opSetInput(loop, spaceid, 0);
 
     if (ptrvn.isFree()) // Don't read a free varnode twice
-      ptrvn = this.data!.newVarnode(ptrvn.getSize(), ptrvn.getSpace(), ptrvn.getOffset());
+      ptrvn = this.data!.newVarnodeFromSpaceOffset(ptrvn.getSize(), ptrvn.getSpace(), ptrvn.getOffset());
     if (spc.isBigEndian()) {
       this.data!.opSetInput(hiop, ptrvn, 1);
       this.data!.opSetInput(loop, addvn, 1);

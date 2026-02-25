@@ -149,6 +149,10 @@ export class IfcLoadFile extends IfaceDecompCommand {
       this.dcp.conf.readLoaderSymbols('::');
     }
 
+    if ((this.status as any).enhancedDisplay) {
+      this.dcp.conf.applyEnhancedDisplay();
+    }
+
     this.status.optr.write(
       filename + ' successfully loaded: ' + this.dcp.conf.getDescription() + '\n'
     );
@@ -347,6 +351,8 @@ export function main(args: string[]): number {
   let parallelConcurrency: number = 0;
   /** Worker-thread parallelism (0 = disabled, N = number of worker threads) */
   let workerCount: number = 0;
+  /** Enhanced display: standard C types + Ghidra GUI-style globals */
+  let enhancedDisplay: boolean = false;
 
   {
     const extrapaths: string[] = [];
@@ -366,6 +372,8 @@ export function main(args: string[]): number {
       } else if (args[i][1] === 's') {
         i++;
         extrapaths.push(args[i]);
+      } else if (args[i] === '--enhance') {
+        enhancedDisplay = true;
       }
       i += 1;
     }
@@ -436,6 +444,9 @@ export function main(args: string[]): number {
   }
   if (workerCount > 0) {
     (status as any).workerCount = workerCount;
+  }
+  if (enhancedDisplay) {
+    (status as any).enhancedDisplay = true;
   }
 
   if (!status.done) {

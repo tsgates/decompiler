@@ -9,6 +9,7 @@ import { FlowBlock, BlockGraph, BlockGoto, BlockIf, BlockMultiGoto, BlockWhileDo
 import { PcodeOp } from './op.js';
 import { Action, ActionGroupList } from './action.js';
 import { OpCode } from '../core/opcodes.js';
+import { functionalEqualityLevel } from './expression.js';
 
 // ---------------------------------------------------------------------------
 // Forward type declarations for modules not yet translated
@@ -23,14 +24,6 @@ const CPUI_MULTIEQUAL = OpCode.CPUI_MULTIEQUAL;
 const CPUI_COPY = OpCode.CPUI_COPY;
 const CPUI_SUBPIECE = OpCode.CPUI_SUBPIECE;
 const CPUI_RETURN = OpCode.CPUI_RETURN;
-
-/** Forward declaration for functionalEqualityLevel */
-declare function functionalEqualityLevel(
-  vn1: Varnode,
-  vn2: Varnode,
-  res1: Varnode[],
-  res2: Varnode[]
-): number;
 
 // ---------------------------------------------------------------------------
 // FloatingEdge
@@ -2323,10 +2316,12 @@ export class ConditionalJoin {
    */
   private static iterateOps(block: BlockBasic): PcodeOp[] {
     const ops: PcodeOp[] = [];
-    let iter = block.beginOp();
+    const iter = block.beginOp();
     const end = block.endOp();
-    // Assume beginOp/endOp return iterable or array-like
-    // In practice this would use the block's op list
+    while (!iter.equals(end)) {
+      ops.push(iter.get() as PcodeOp);
+      iter.next();
+    }
     return ops;
   }
 }

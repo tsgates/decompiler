@@ -69,6 +69,10 @@ function handleMessage(msg: any): void {
       dcp.conf.init(docStorage);
       dcp.conf.readLoaderSymbols('::');
 
+      if (msg.enhancedDisplay) {
+        dcp.conf.applyEnhancedDisplay();
+      }
+
       initialized = true;
       process.send!({ type: 'ready', workerId });
     } catch (err: any) {

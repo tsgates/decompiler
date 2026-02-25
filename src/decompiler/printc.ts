@@ -11,6 +11,7 @@ import { FloatClass } from '../core/float.js';
 import { Address, calc_mask, sign_extend } from '../core/address.js';
 import { OpCode } from '../core/opcodes.js';
 import { spacetype } from '../core/space.js';
+import { block_flags, block_type } from './block.js';
 import { CastStrategyC } from './cast.js';
 import { CommentSorter } from './comment.js';
 import {
@@ -289,6 +290,7 @@ export class PrintC extends PrintLanguage {
   protected option_nocasts: boolean = false;
   protected option_unplaced: boolean = false;
   protected option_hide_exts: boolean = true;
+  protected option_show_addresses: boolean = false;
   protected option_brace_func: brace_style = brace_style.skip_line;
   protected option_brace_ifelse: brace_style = brace_style.same_line;
   protected option_brace_loop: brace_style = brace_style.same_line;
@@ -301,6 +303,22 @@ export class PrintC extends PrintLanguage {
   // -----------------------------------------------------------------------
 
   protected commsorter: CommentSorter = new CommentSorter();
+
+  // Enhanced display: tracks goto targets that were converted to if-then blocks
+  protected convertedGotoTargets: Set<FlowBlock> = new Set();
+
+  // Reference-counted goto target tracking for cross-scope break conversion.
+  // Maps target FrontLeaf → { total gotos targeting it, converted count }
+  private gotoTargetRefCount: Map<FlowBlock, { total: number; converted: number }> = new Map();
+
+  // Enhanced display: stack of pending nested gotos to propagate up to parent BlockLists.
+  // When a BlockIf's goto targets a sibling at a parent BlockList, the condition info is
+  // stored here for the parent to pick up and wrap remaining siblings.
+  private pendingNestedGoto: {
+    condBlock: FlowBlock;
+    targetLeaf: FlowBlock;
+    gotoTarget: FlowBlock;
+  } | null = null;
 
   // -----------------------------------------------------------------------
   // Constructor
@@ -356,6 +374,7 @@ export class PrintC extends PrintLanguage {
   setBraceFormatIfElse(style: brace_style): void { this.option_brace_ifelse = style; }
   setBraceFormatLoop(style: brace_style): void { this.option_brace_loop = style; }
   setBraceFormatSwitch(style: brace_style): void { this.option_brace_switch = style; }
+  setShowAddresses(val: boolean): void { this.option_show_addresses = val; }
 
   // -----------------------------------------------------------------------
   // buildTypeStack
@@ -974,6 +993,8 @@ export class PrintC extends PrintLanguage {
     if (this.castStrategy!.isZextCast(op.getOut().getHighTypeDefFacing(), op.getIn(0).getHighTypeReadFacing(op))) {
       if (this.option_hide_exts && this.castStrategy!.isExtensionCastImplied(op, readOp))
         this.opHiddenFunc(op);
+      else if (this.glb.enhancedDisplay && this.isExtensionRedundant(op))
+        this.opHiddenFunc(op);
       else
         this.opTypeCast(op);
     } else
@@ -984,10 +1005,31 @@ export class PrintC extends PrintLanguage {
     if (this.castStrategy!.isSextCast(op.getOut().getHighTypeDefFacing(), op.getIn(0).getHighTypeReadFacing(op))) {
       if (this.option_hide_exts && this.castStrategy!.isExtensionCastImplied(op, readOp))
         this.opHiddenFunc(op);
+      else if (this.glb.enhancedDisplay && this.isExtensionRedundant(op))
+        this.opHiddenFunc(op);
       else
         this.opTypeCast(op);
     } else
       this.opFunc(op);
+  }
+
+  private isExtensionRedundant(op: PcodeOp): boolean {
+    const inVn = op.getIn(0);
+    const outVn = op.getOut();
+    // If input already has the same size as output, extension is a no-op
+    if (inVn.getSize() === outVn.getSize()) return true;
+    // If input comes from AND with a mask fitting output size, extension is redundant
+    if (inVn.isWritten()) {
+      const defOp = inVn.getDef()!;
+      if (defOp.code() === OpCode.CPUI_INT_AND) {
+        const maskVn = defOp.getIn(1);
+        if (maskVn.isConstant()) {
+          const mask = maskVn.getOffset();
+          if (mask <= calc_mask(outVn.getSize())) return true;
+        }
+      }
+    }
+    return false;
   }
 
   opBoolNegate(op: PcodeOp): void {
@@ -1344,6 +1386,31 @@ export class PrintC extends PrintLanguage {
   }
 
   // -----------------------------------------------------------------------
+  // isBitmaskLike — detect bitmask-like values that should always be hex
+  // -----------------------------------------------------------------------
+
+  static isBitmaskLike(val: bigint, sz: number): boolean {
+    if (val <= 10n) return false;
+    const mask = calc_mask(sz);
+    // All-F masks: 0xFF, 0xFFFF, 0xFFFFFFFF, etc.
+    if (val === mask) return true;
+    // Power of 2: 0x80, 0x8000, 0x80000000
+    if ((val & (val - 1n)) === 0n) return true;
+    // Contiguous bit run from bit 0: 0x7F, 0x7FFF, 0x1FF
+    if ((val & (val + 1n)) === 0n) return true;
+    // Low bits cleared (high contiguous): 0xFF00, 0xFFF0
+    const filled = val | (val - 1n);
+    if (filled === mask) return true;
+    // Inverted masks
+    const inv = (~val) & mask;
+    if (inv > 0n && (inv & (inv - 1n)) === 0n) return true;  // inverse is power of 2
+    if (inv > 0n && (inv & (inv + 1n)) === 0n) return true;  // inverse is contiguous from bit 0
+    // Values > 255 that are round in hex (end in 00)
+    if (val > 0xFFn && (val & 0xFFn) === 0n) return true;
+    return false;
+  }
+
+  // -----------------------------------------------------------------------
   // push_integer
   // -----------------------------------------------------------------------
 
@@ -1392,7 +1459,11 @@ export class PrintC extends PrintLanguage {
     } else if (val <= 10n || (this.mods & modifiers.force_dec) !== 0) {
       displayFormat = 2; // force_dec
     } else {
-      displayFormat = (PrintLanguage.mostNaturalBase(val) === 16) ? 1 : 2;
+      if (this.glb.enhancedDisplay && PrintC.isBitmaskLike(val, sz)) {
+        displayFormat = 1; // hex for bitmask-like values
+      } else {
+        displayFormat = (PrintLanguage.mostNaturalBase(val) === 16) ? 1 : 2;
+      }
     }
 
     let t = "";
@@ -2355,12 +2426,33 @@ export class PrintC extends PrintLanguage {
       this.emit.tagLine();
   }
 
+  private isSelfStore(op: PcodeOp): boolean {
+    if (op.code() !== OpCode.CPUI_STORE) return false;
+    const valVn = op.getIn(2);
+    if (!valVn.isWritten()) return false;
+    const defOp = valVn.getDef()!;
+    if (defOp.code() !== OpCode.CPUI_LOAD) return false;
+    // Check same space and address varnodes
+    return op.getIn(0) === defOp.getIn(0) && op.getIn(1) === defOp.getIn(1);
+  }
+
   protected emitStatement(inst: PcodeOp): void {
+    if (this.glb.enhancedDisplay && this.isSelfStore(inst)) {
+      return;
+    }
     const id: number = this.emit.beginStatement(inst);
     this.emitExpression(inst);
     this.emit.endStatement(id);
-    if (!this.isSet(modifiers.comma_separate))
+    if (!this.isSet(modifiers.comma_separate)) {
       this.emit.print(PrintC.SEMICOLON);
+      if (this.option_show_addresses && inst !== null) {
+        const addr = inst.getAddr();
+        const off = addr.getOffset();
+        const addrStr = "/* " + off.toString(16) + " */";
+        this.emit.spaces(1);
+        this.emit.print(addrStr, syntax_highlight.comment_color);
+      }
+    }
   }
 
   protected emitInplaceOp(op: PcodeOp): boolean {
@@ -2484,6 +2576,8 @@ export class PrintC extends PrintLanguage {
       // block_type.t_copy = 3
       if (bl.getType() !== 3) return;
     }
+    // Enhanced: suppress labels for converted goto targets
+    if (this.glb.enhancedDisplay && this.convertedGotoTargets.has(bl)) return;
     this.emit.tagLineWithIndent(0);
     this.emitLabel(bl);
     this.emit.print(PrintC.COLON);
@@ -2682,6 +2776,12 @@ export class PrintC extends PrintLanguage {
     if (!this.isSet(modifiers.flat) && fd.hasNoStructBlocks())
       throw new LowlevelError("Function not fully decompiled. No structure present.");
     try {
+      this.convertedGotoTargets.clear();
+      this.gotoTargetRefCount.clear();
+      // Pre-scan for goto target reference counts (needed for label suppression)
+      if (this.glb.enhancedDisplay && !this.isSet(modifiers.flat)) {
+        this.scanGotoTargetRefs(fd.getStructure());
+      }
       this.commsorter.setupFunctionList(this.instr_comment_type | this.head_comment_type, fd, fd.getArch().commentdb, this.option_unplaced);
       const id1: number = this.emit.beginFunction(fd);
       this.emitCommentFuncHeader(fd);
@@ -2782,6 +2882,290 @@ export class PrintC extends PrintLanguage {
     bl.subBlock(0).emit(this);
   }
 
+  // -----------------------------------------------------------------------
+  // Enhanced display: conditional goto → if-then conversion helpers
+  // -----------------------------------------------------------------------
+
+  /**
+   * Find which sibling in a BlockList corresponds to a goto target
+   * by comparing getFrontLeaf() values.
+   */
+  private findGotoTargetSibling(bl: BlockGraph, target: FlowBlock, startIdx: number): number {
+    const targetLeaf = target.getFrontLeaf();
+    for (let j = startIdx; j < bl.getSize(); j++) {
+      if (bl.getBlock(j).getFrontLeaf() === targetLeaf) return j;
+    }
+    return -1;
+  }
+
+  /**
+   * Check if a block is a conditional goto that can be converted to if-then.
+   * Returns the target sibling index, or -1 if not convertible.
+   */
+  private isConvertibleGoto(subbl: FlowBlock, bl: BlockGraph, nextIdx: number): number {
+    if (!this.glb.enhancedDisplay) return -1;
+    // block_type.t_if = 8
+    if (subbl.getType() !== 8) return -1;
+    const ifbl = subbl as BlockIf;
+    const target = ifbl.getGotoTarget();
+    if (target == null) return -1;
+    // Only pure gotos, not break/continue
+    if (ifbl.getGotoType() !== block_flags.f_goto_goto) return -1;
+    const targetIdx = this.findGotoTargetSibling(bl, target, nextIdx);
+    if (targetIdx < 0) return -1;       // Target not in this list
+    if (targetIdx <= nextIdx) return -1; // No intermediate blocks to wrap
+    return targetIdx;
+  }
+
+  /**
+   * Check if a BlockList has any convertible gotos (for fast short-circuit).
+   */
+  private hasConvertibleGotos(bl: BlockGraph): boolean {
+    for (let i = 0; i < bl.getSize() - 1; i++) {
+      if (this.isConvertibleGoto(bl.getBlock(i), bl, i + 1) > 0) return true;
+    }
+    return false;
+  }
+
+  // -----------------------------------------------------------------------
+  // Enhanced display: cross-scope goto-to-break conversion (Phase 2)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Find the block that executes after a loop in its parent context.
+   * Returns the FrontLeaf of that block, or null if the loop is at the end.
+   */
+  private findLoopExitLeaf(loop: FlowBlock): FlowBlock | null {
+    const loopParent = loop.getParent();
+    if (loopParent == null) return null;
+    const exitBlock = loopParent.nextFlowAfter(loop);
+    return exitBlock;  // already a FrontLeaf from nextFlowAfter
+  }
+
+  /**
+   * Check if a BlockIf's goto can be converted to a `break` statement.
+   * Walks up the parent chain looking for an enclosing loop whose exit
+   * matches the goto target.
+   *
+   * Returns the loop block if convertible, null otherwise.
+   */
+  private findBreakTargetLoop(ifBlock: FlowBlock): FlowBlock | null {
+    if (!this.glb.enhancedDisplay) return null;
+    const target = ifBlock.getGotoTarget != null ? ifBlock.getGotoTarget() : null;
+    if (target == null) return null;
+    const gotoType: number = ifBlock.getGotoType != null ? ifBlock.getGotoType() : 0;
+    if (gotoType !== block_flags.f_goto_goto) return null;
+
+    const targetLeaf = target.getFrontLeaf();
+    if (targetLeaf == null) return null;
+
+    // Walk up parent chain looking for an enclosing loop
+    let cur = ifBlock.getParent();
+    while (cur != null) {
+      const type: number = cur.getType();
+      if (type === block_type.t_whiledo || type === block_type.t_dowhile ||
+          type === block_type.t_infloop) {
+        // Check if goto target matches this loop's exit
+        const exitLeaf = this.findLoopExitLeaf(cur);
+        if (exitLeaf != null && exitLeaf === targetLeaf) {
+          return cur;  // Single-level break
+        }
+        // Don't check outer loops — that would be multi-level break (Phase 3)
+        return null;
+      }
+      cur = cur.getParent();
+    }
+    return null;
+  }
+
+  /**
+   * Check if a BlockGoto's unconditional goto can be converted to `break`.
+   */
+  private findBreakTargetLoopForGoto(gotoBlock: FlowBlock): FlowBlock | null {
+    if (!this.glb.enhancedDisplay) return null;
+    const target = gotoBlock.getGotoTarget != null ? gotoBlock.getGotoTarget() : null;
+    if (target == null) return null;
+    const gotoType: number = gotoBlock.getGotoType != null ? gotoBlock.getGotoType() : 0;
+    if (gotoType !== block_flags.f_goto_goto) return null;
+
+    const targetLeaf = target.getFrontLeaf();
+    if (targetLeaf == null) return null;
+
+    let cur = gotoBlock.getParent();
+    while (cur != null) {
+      const type: number = cur.getType();
+      if (type === block_type.t_whiledo || type === block_type.t_dowhile ||
+          type === block_type.t_infloop) {
+        const exitLeaf = this.findLoopExitLeaf(cur);
+        if (exitLeaf != null && exitLeaf === targetLeaf) {
+          return cur;
+        }
+        return null;
+      }
+      cur = cur.getParent();
+    }
+    return null;
+  }
+
+  /**
+   * Pre-emission scan: count total goto references to each target FrontLeaf.
+   * This is needed for reference-counted label suppression.
+   */
+  private scanGotoTargetRefs(bl: FlowBlock): void {
+    if (bl == null) return;
+    const type: number = bl.getType();
+
+    // Check BlockIf with goto target
+    if (type === block_type.t_if) {
+      const target = bl.getGotoTarget != null ? bl.getGotoTarget() : null;
+      if (target != null) {
+        const leaf = target.getFrontLeaf();
+        if (leaf != null) {
+          const entry = this.gotoTargetRefCount.get(leaf);
+          if (entry) entry.total++;
+          else this.gotoTargetRefCount.set(leaf, { total: 1, converted: 0 });
+        }
+      }
+    }
+
+    // Check BlockGoto
+    if (type === block_type.t_goto) {
+      if (bl.gotoPrints != null && bl.gotoPrints()) {
+        const target = bl.getGotoTarget != null ? bl.getGotoTarget() : null;
+        if (target != null) {
+          const leaf = target.getFrontLeaf();
+          if (leaf != null) {
+            const entry = this.gotoTargetRefCount.get(leaf);
+            if (entry) entry.total++;
+            else this.gotoTargetRefCount.set(leaf, { total: 1, converted: 0 });
+          }
+        }
+      }
+    }
+
+    // Check BlockSwitch case gotos
+    if (type === block_type.t_switch && bl.getNumCaseBlocks != null) {
+      const numCases: number = bl.getNumCaseBlocks();
+      for (let i = 0; i < numCases; i++) {
+        const caseGotoType: number = bl.getCaseGotoType != null ? bl.getCaseGotoType(i) : 0;
+        if (caseGotoType === block_flags.f_goto_goto) {
+          const caseTarget = bl.getCaseBlock != null ? bl.getCaseBlock(i) : null;
+          if (caseTarget != null) {
+            const leaf = caseTarget.getFrontLeaf();
+            if (leaf != null) {
+              const entry = this.gotoTargetRefCount.get(leaf);
+              if (entry) entry.total++;
+              else this.gotoTargetRefCount.set(leaf, { total: 1, converted: 0 });
+            }
+          }
+        }
+      }
+    }
+
+    // Recurse into children
+    if (bl.getSize != null) {
+      const size: number = bl.getSize();
+      for (let i = 0; i < size; i++) {
+        this.scanGotoTargetRefs(bl.getBlock(i));
+      }
+    } else if (bl.subBlock != null && type === block_type.t_copy) {
+      this.scanGotoTargetRefs(bl.subBlock(0));
+    }
+  }
+
+  /**
+   * Record that a goto to a target has been converted to break.
+   * If all gotos to the target are converted, suppress its label.
+   */
+  private markGotoConverted(targetLeaf: FlowBlock): void {
+    const entry = this.gotoTargetRefCount.get(targetLeaf);
+    if (entry) {
+      entry.converted++;
+      if (entry.converted >= entry.total) {
+        // All gotos to this target have been converted — suppress label
+        this.convertedGotoTargets.add(targetLeaf);
+      }
+    } else {
+      // No pre-scan entry — conservatively suppress
+      this.convertedGotoTargets.add(targetLeaf);
+    }
+  }
+
+  /**
+   * Check if a goto target is a sibling in any ancestor BlockList.
+   * Walks up the parent chain from `bl`, looking for a BlockList that
+   * contains a sibling whose FrontLeaf matches `targetLeaf`.
+   */
+  private isTargetInAncestorBlockList(bl: FlowBlock, targetLeaf: FlowBlock): boolean {
+    let cur = bl.getParent();
+    while (cur != null) {
+      const type: number = cur.getType();
+      if (type === block_type.t_ls) {
+        // Check if targetLeaf matches any sibling in this BlockList
+        const size: number = cur.getSize();
+        for (let i = 0; i < size; i++) {
+          const sibling = cur.getBlock(i);
+          const sibLeaf = sibling.getFrontLeaf();
+          if (sibLeaf === targetLeaf) return true;
+        }
+      }
+      cur = cur.getParent();
+    }
+    return false;
+  }
+
+  /**
+   * Emit a conditional goto as an if-then block wrapping intermediate siblings.
+   */
+  private emitGotoAsIf(bl: BlockGraph, ifBlock: BlockIf, startIdx: number, targetIdx: number): void {
+    const condBlock = ifBlock.getBlock(0);
+
+    // 1. Emit the no_branch part (statements before the condition)
+    this.pushMod();
+    this.setMod(modifiers.no_branch);
+    condBlock.emit(this);
+    this.popMod();
+    this.emitCommentBlockTree(condBlock);
+
+    // 2. Emit: if (<negated condition>) {
+    this.emit.tagLine();
+    const op = condBlock.lastOp();
+    this.emit.tagOp(PrintC.KEYWORD_IF, syntax_highlight.keyword_color, op);
+    this.emit.spaces(1);
+    condBlock.negateCondition(false);   // toggle f_flip_path
+    this.pushMod();
+    this.setMod(modifiers.only_branch);
+    condBlock.emit(this);
+    this.popMod();
+    condBlock.negateCondition(false);   // restore
+
+    // 3. Open brace, emit intermediate blocks, close brace
+    const indent = this.emit.openBraceIndent(PrintC.OPEN_CURLY, this.option_brace_ifelse);
+    this.pushMod();
+    if (!this.isSet(modifiers.flat))
+      this.setMod(modifiers.no_branch);
+    for (let j = startIdx + 1; j < targetIdx; j++) {
+      const midbl = bl.getBlock(j);
+      const id = this.emit.beginBlock(midbl);
+      const nextJ = j + 1;
+      if (nextJ < targetIdx && bl.getBlock(nextJ) !== midbl.nextInFlow()) {
+        this.pushMod();
+        this.setMod(modifiers.nofallthru);
+        midbl.emit(this);
+        this.popMod();
+      } else {
+        midbl.emit(this);
+      }
+      this.emit.endBlock(id);
+    }
+    this.popMod();
+    this.emit.closeBraceIndent(PrintC.CLOSE_CURLY, indent);
+
+    // Track the target's front leaf for label suppression
+    const targetLeaf = ifBlock.getGotoTarget()!.getFrontLeaf();
+    if (targetLeaf != null) this.convertedGotoTargets.add(targetLeaf);
+  }
+
   emitBlockGoto(bl: BlockGoto): void {
     this.pushMod();
     this.setMod(modifiers.no_branch);
@@ -2789,8 +3173,17 @@ export class PrintC extends PrintLanguage {
     this.popMod();
     // Make sure we don't print goto if it is the next block to be printed
     if (bl.gotoPrints()) {
-      this.emit.tagLine();
-      this.emitGotoStatement(bl.getBlock(0), bl.getGotoTarget(), bl.getGotoType());
+      // Enhanced: check if this goto can be converted to break
+      const breakLoop = this.findBreakTargetLoopForGoto(bl);
+      if (breakLoop != null) {
+        this.emit.tagLine();
+        this.emitGotoStatement(bl.getBlock(0), null as any, block_flags.f_break_goto);
+        const targetLeaf = bl.getGotoTarget().getFrontLeaf();
+        if (targetLeaf != null) this.markGotoConverted(targetLeaf);
+      } else {
+        this.emit.tagLine();
+        this.emitGotoStatement(bl.getBlock(0), bl.getGotoTarget(), bl.getGotoType());
+      }
     }
   }
 
@@ -2804,6 +3197,16 @@ export class PrintC extends PrintLanguage {
     }
 
     if (bl.getSize() === 0) return;
+
+    // Pre-check: any enhanced gotos to convert?
+    // In enhanced mode, always use the enhanced path since nested gotos
+    // may be detected during emission.
+    if (this.glb.enhancedDisplay) {
+      this.emitBlockLsEnhanced(bl);
+      return;
+    }
+
+    // === original emitBlockLs code unchanged ===
     let i = 0;
     subbl = bl.getBlock(i++);
     let id1: number = this.emit.beginBlock(subbl);
@@ -2843,6 +3246,142 @@ export class PrintC extends PrintLanguage {
     const id3: number = this.emit.beginBlock(subbl);
     subbl.emit(this);
     this.emit.endBlock(id3);
+  }
+
+  /**
+   * Enhanced emitBlockLs: converts conditional gotos to if-then blocks.
+   */
+  private emitBlockLsEnhanced(bl: BlockList): void {
+    this.pushMod();
+    if (!this.isSet(modifiers.flat))
+      this.setMod(modifiers.no_branch);
+
+    let i = 0;
+    while (i < bl.getSize()) {
+      const subbl = bl.getBlock(i);
+      const isLast = (i === bl.getSize() - 1);
+
+      // Check for convertible conditional goto (direct child)
+      const targetIdx = isLast ? -1 : this.isConvertibleGoto(subbl, bl, i + 1);
+      if (targetIdx > 0) {
+        const id = this.emit.beginBlock(subbl);
+        this.emitGotoAsIf(bl, subbl as BlockIf, i, targetIdx);
+        this.emit.endBlock(id);
+        i = targetIdx;
+        continue;
+      }
+
+      // Last block: pop no_branch before emitting
+      if (isLast) {
+        this.popMod();
+        const id = this.emit.beginBlock(subbl);
+        subbl.emit(this);
+        this.emit.endBlock(id);
+        // Check for pending nested goto even on last block
+        if (this.pendingNestedGoto != null) {
+          this.handlePendingNestedGoto(bl, i);
+        }
+        i++;
+        continue;
+      }
+
+      // Normal block emission (first or middle)
+      const savePending = this.pendingNestedGoto;
+      this.pendingNestedGoto = null;
+      const id = this.emit.beginBlock(subbl);
+      if (i + 1 < bl.getSize() && bl.getBlock(i + 1) !== subbl.nextInFlow()) {
+        this.pushMod();
+        this.setMod(modifiers.nofallthru);
+        subbl.emit(this);
+        this.popMod();
+      } else {
+        subbl.emit(this);
+      }
+      this.emit.endBlock(id);
+
+      // After emitting a child, check if a nested goto was propagated up
+      if (this.pendingNestedGoto != null) {
+        const pending = this.pendingNestedGoto;
+        this.pendingNestedGoto = null;
+        // Find the target among later siblings of this BlockList
+        const nestedTargetIdx = this.findGotoTargetSibling(bl, pending.gotoTarget, i + 1);
+        if (nestedTargetIdx > i + 1) {
+          // Wrap intermediate siblings in if (!condition) { ... }
+          this.emitNestedGotoAsIf(bl, pending.condBlock, i + 1, nestedTargetIdx, pending.targetLeaf);
+          i = nestedTargetIdx;
+          continue;
+        }
+        // Target not found or is the very next sibling — no wrapping needed
+        if (nestedTargetIdx === i + 1) {
+          // Target is next — just suppress the label and goto
+          this.markGotoConverted(pending.targetLeaf);
+          i++;
+          continue;
+        }
+        // Could not find target in this BlockList — restore pending for higher level
+        this.pendingNestedGoto = pending;
+      } else {
+        this.pendingNestedGoto = savePending;
+      }
+
+      i++;
+    }
+  }
+
+  /**
+   * Handle a pending nested goto that was propagated up from a child.
+   * Called when the pending goto's target might be in a higher BlockList.
+   */
+  private handlePendingNestedGoto(bl: BlockList, currentIdx: number): void {
+    // The pending goto was detected but the target wasn't found in this BlockList.
+    // Leave it pending for a higher level.
+  }
+
+  /**
+   * Emit intermediate blocks wrapped in if (!condition) { ... }
+   * for a nested goto that was propagated up from a child block.
+   */
+  private emitNestedGotoAsIf(
+    bl: BlockGraph, condBlock: FlowBlock,
+    startIdx: number, targetIdx: number,
+    targetLeaf: FlowBlock
+  ): void {
+    // Emit: if (<negated condition>) {
+    this.emit.tagLine();
+    const op = condBlock.lastOp();
+    this.emit.tagOp(PrintC.KEYWORD_IF, syntax_highlight.keyword_color, op);
+    this.emit.spaces(1);
+    condBlock.negateCondition(false);   // toggle f_flip_path
+    this.pushMod();
+    this.setMod(modifiers.only_branch);
+    condBlock.emit(this);
+    this.popMod();
+    condBlock.negateCondition(false);   // restore
+
+    // Open brace, emit intermediate blocks, close brace
+    const indent = this.emit.openBraceIndent(PrintC.OPEN_CURLY, this.option_brace_ifelse);
+    this.pushMod();
+    if (!this.isSet(modifiers.flat))
+      this.setMod(modifiers.no_branch);
+    for (let j = startIdx; j < targetIdx; j++) {
+      const midbl = bl.getBlock(j);
+      const id = this.emit.beginBlock(midbl);
+      const nextJ = j + 1;
+      if (nextJ < targetIdx && bl.getBlock(nextJ) !== midbl.nextInFlow()) {
+        this.pushMod();
+        this.setMod(modifiers.nofallthru);
+        midbl.emit(this);
+        this.popMod();
+      } else {
+        midbl.emit(this);
+      }
+      this.emit.endBlock(id);
+    }
+    this.popMod();
+    this.emit.closeBraceIndent(PrintC.CLOSE_CURLY, indent);
+
+    // Suppress the target label
+    this.markGotoConverted(targetLeaf);
   }
 
   emitBlockCondition(bl: BlockCondition): void {
@@ -2909,8 +3448,30 @@ export class PrintC extends PrintLanguage {
     condBlock.emit(this);
     this.popMod();
     if (bl.getGotoTarget() !== null && bl.getGotoTarget() !== undefined) {
-      this.emit.spaces(1);
-      this.emitGotoStatement(condBlock, bl.getGotoTarget(), bl.getGotoType());
+      // Enhanced: check if this goto can be converted to break
+      const breakLoop = this.findBreakTargetLoop(bl);
+      if (breakLoop != null) {
+        this.emit.spaces(1);
+        this.emitGotoStatement(condBlock, null as any, block_flags.f_break_goto);
+        const targetLeaf = bl.getGotoTarget()!.getFrontLeaf();
+        if (targetLeaf != null) this.markGotoConverted(targetLeaf);
+      } else if (this.glb.enhancedDisplay && bl.getGotoType() === block_flags.f_goto_goto &&
+                 this.pendingNestedGoto == null) {
+        // Check if target is a sibling at a parent BlockList — propagate up
+        const gotoTarget = bl.getGotoTarget()!;
+        const targetLeaf = gotoTarget.getFrontLeaf();
+        if (targetLeaf != null && this.isTargetInAncestorBlockList(bl, targetLeaf)) {
+          // Don't emit the goto — set pending for parent BlockList to pick up
+          this.pendingNestedGoto = { condBlock, targetLeaf, gotoTarget };
+          // Emit nothing (the goto is suppressed)
+        } else {
+          this.emit.spaces(1);
+          this.emitGotoStatement(condBlock, bl.getGotoTarget(), bl.getGotoType());
+        }
+      } else {
+        this.emit.spaces(1);
+        this.emitGotoStatement(condBlock, bl.getGotoTarget(), bl.getGotoType());
+      }
     } else {
       this.setMod(modifiers.no_branch);
       const id: number = this.emit.openBraceIndent(PrintC.OPEN_CURLY, this.option_brace_ifelse);
@@ -3072,8 +3633,39 @@ export class PrintC extends PrintLanguage {
       this.emitSwitchCase(i, bl);
       const id: number = this.emit.startIndent();
       if (bl.getCaseGotoType(i) !== 0) {
-        this.emit.tagLine();
-        this.emitGotoStatement(bl.getBlock(0), bl.getCaseBlock(i), bl.getCaseGotoType(i));
+        const caseGotoType: number = bl.getCaseGotoType(i);
+        // Enhanced: check if switch case goto targets a loop exit
+        if (this.glb.enhancedDisplay && caseGotoType === block_flags.f_goto_goto) {
+          const caseTarget = bl.getCaseBlock(i);
+          const caseTargetLeaf = caseTarget != null ? caseTarget.getFrontLeaf() : null;
+          let converted = false;
+          if (caseTargetLeaf != null) {
+            // Walk up from switch looking for enclosing loop
+            let cur = bl.getParent();
+            while (cur != null) {
+              const curType: number = cur.getType();
+              if (curType === block_type.t_whiledo || curType === block_type.t_dowhile ||
+                  curType === block_type.t_infloop) {
+                const exitLeaf = this.findLoopExitLeaf(cur);
+                if (exitLeaf != null && exitLeaf === caseTargetLeaf) {
+                  this.emit.tagLine();
+                  this.emitGotoStatement(bl.getBlock(0), null as any, block_flags.f_break_goto);
+                  this.markGotoConverted(caseTargetLeaf);
+                  converted = true;
+                }
+                break;
+              }
+              cur = cur.getParent();
+            }
+          }
+          if (!converted) {
+            this.emit.tagLine();
+            this.emitGotoStatement(bl.getBlock(0), bl.getCaseBlock(i), caseGotoType);
+          }
+        } else {
+          this.emit.tagLine();
+          this.emitGotoStatement(bl.getBlock(0), bl.getCaseBlock(i), caseGotoType);
+        }
       } else {
         bl2 = bl.getCaseBlock(i);
         const id2: number = this.emit.beginBlock(bl2);

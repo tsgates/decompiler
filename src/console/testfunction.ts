@@ -293,6 +293,16 @@ export class FunctionTestCollection {
     this.dcp.conf.readLoaderSymbols("::");
   }
 
+  /**
+   * Enable enhanced display on the loaded architecture.
+   * Must be called after loadTest().
+   */
+  applyEnhancedDisplay(): void {
+    if (this.dcp.conf) {
+      this.dcp.conf.applyEnhancedDisplay();
+    }
+  }
+
   /** Initialize each FunctionTestProperty. */
   private startTests(): void {
     for (let i = 0; i < this.testList.length; ++i) {
