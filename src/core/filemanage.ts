@@ -24,6 +24,11 @@ export class FileManage {
     this.pathlist.push(process.cwd());
   }
 
+  /** Return the number of directories in the search path */
+  getPathCount(): number {
+    return this.pathlist.length;
+  }
+
   /**
    * Resolve a full pathname by searching the path list.
    * Returns the resolved path or empty string if not found.

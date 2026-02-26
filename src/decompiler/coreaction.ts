@@ -25,6 +25,7 @@ import { DynamicHash } from './dynamic.js';
 import { LaneDescription } from './transform.js';
 import { ResolvedUnion } from './unionresolve.js';
 import { VarnodeData } from '../core/pcoderaw.js';
+import { applyStdlibPrototype } from './stdlib_prototypes.js';
 
 // =====================================================================
 // Forward declarations / type aliases for types not yet available
@@ -3065,6 +3066,9 @@ export class ActionDefaultParams extends Action {
         const otherfunc: Funcdata | null = fc.getFuncdata();
 
         if (otherfunc !== null) {
+          if (data.getArch().enhancedDisplay && !otherfunc.getFuncProto().isInputLocked()) {
+            applyStdlibPrototype(otherfunc.getFuncProto(), fc.getName(), data.getArch());
+          }
           fc.copy(otherfunc.getFuncProto());
           if (!fc.isModelLocked() && !fc.hasMatchingModel(evalfp!))
             fc.setModel(evalfp!);
