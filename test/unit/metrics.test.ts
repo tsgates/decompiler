@@ -16,7 +16,6 @@ import {
 import { existsSync } from 'fs';
 import path from 'path';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
 const DATA_DIR = 'ghidra-src/Ghidra/Features/Decompiler/src/decompile/datatests';
 
 describe('createEmptyMetrics', () => {
@@ -92,7 +91,7 @@ describe('formatMetricsTable', () => {
 
 describe('collectFunctionMetrics on datatests', () => {
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   // Helper to decompile and get text-based metrics
@@ -139,7 +138,7 @@ describe('collectFunctionMetrics on datatests', () => {
 
 describe('enhanced mode goto reduction invariant', () => {
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   function countGotos(xmlFile: string, enhanced: boolean): number {
@@ -169,7 +168,7 @@ describe('enhanced mode goto reduction invariant', () => {
 
 describe('enhanced mode brace balance on datatests', () => {
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   // Test a broader set of datatests for brace balance in enhanced mode

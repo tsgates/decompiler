@@ -16,13 +16,11 @@ import { StringWriter } from '../../src/util/writer.js';
 import { existsSync } from 'fs';
 import path from 'path';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
-
 describe('applyEnhancedDisplayNames', () => {
   let types: TypeFactory;
 
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
     const capa = ArchitectureCapability.getCapability('xml');
     const store = new DocumentStorage();
     const doc = store.parseDocument(`<decompilertest><binaryimage arch="x86:LE:64:default:gcc"><bytechunk space="ram" offset="0x100000" readonly="true">00</bytechunk></binaryimage></decompilertest>`);
@@ -167,7 +165,7 @@ const DATA_DIR = 'ghidra-src/Ghidra/Features/Decompiler/src/decompile/datatests'
 
 describe('goto-to-if conversion', () => {
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   describe('elseif.xml (datatest with goto)', () => {
@@ -261,7 +259,7 @@ describe('goto-to-if conversion on quality tests', () => {
   }
 
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   // Quality tests known to have gotos
@@ -409,7 +407,7 @@ describe('enhanced mode brace balance across ALL quality test opt levels', () =>
   }
 
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   // All binaries that have gotos at any opt level

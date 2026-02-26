@@ -2,7 +2,7 @@
  * Benchmark: TS sequential vs TS parallel (cloned action tree) vs C++ reference.
  *
  * Usage:
- *   SLEIGH_PATH=... npx tsx test/bench-parallel.ts
+ *   npx tsx test/bench-parallel.ts
  */
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -17,7 +17,6 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
 const DATATESTS_DIR = process.env.DATATESTS_PATH || path.resolve(
   __dirname, '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests'
 );
@@ -25,7 +24,7 @@ const CPP_BINARY = path.resolve(
   __dirname, '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'cpp', 'decomp_test_dbg'
 );
 
-startDecompilerLibrary(SLEIGH_PATH);
+startDecompilerLibrary();
 
 // Gather all test files
 const testFiles = fs.readdirSync(DATATESTS_DIR)
@@ -80,7 +79,7 @@ function runCpp(testFile: string): TestResult {
   const result = spawnSync(CPP_BINARY, [
     '-usesleighenv', '-path', DATATESTS_DIR, 'datatests', `${basename}.xml`
   ], {
-    env: { ...process.env, SLEIGHHOME: SLEIGH_PATH },
+    env: { ...process.env },
     encoding: 'utf8',
     timeout: 60000,
   });

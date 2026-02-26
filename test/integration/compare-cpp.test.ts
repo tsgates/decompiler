@@ -16,7 +16,6 @@ import { startDecompilerLibrary } from '../../src/console/libdecomp.js';
 import { FunctionTestCollection } from '../../src/console/testfunction.js';
 import { StringWriter } from '../../src/util/writer.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/ghidra';
 const DATATESTS_DIR = process.env.DATATESTS_PATH || path.resolve(
   __dirname, '..', '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests'
 );
@@ -37,7 +36,7 @@ function runCppDecompiler(testName: string): string {
   const result = spawnSync(CPP_BINARY, [
     '-usesleighenv', '-path', DATATESTS_DIR, 'datatests', `${testName}.xml`
   ], {
-    env: { ...process.env, SLEIGHHOME: SLEIGH_PATH },
+    env: { ...process.env },
     encoding: 'utf8',
     timeout: 30000,
   });
@@ -79,7 +78,7 @@ try {
 
 describe('TS vs C++ output comparison', () => {
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   if (testFiles.length === 0) {
@@ -87,9 +86,13 @@ describe('TS vs C++ output comparison', () => {
     return;
   }
 
-  // Verify C++ binary exists
+  // Verify C++ binary exists and SLEIGHHOME is set (C++ binary needs it)
   if (!fs.existsSync(CPP_BINARY)) {
     it.skip('C++ binary decomp_test_dbg not found', () => {});
+    return;
+  }
+  if (!process.env.SLEIGHHOME) {
+    it.skip('SLEIGHHOME not set (needed for C++ binary)', () => {});
     return;
   }
 

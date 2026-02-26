@@ -35,7 +35,6 @@ for (let i = 2; i < process.argv.length; i++) {
     }
 }
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
 const xmlFile = positional[0] || '/tmp/decomp-test/exported.xml';
 const outputDir = positional[1] || '';
 const CPP_BIN = 'ghidra-src/Ghidra/Features/Decompiler/src/decompile/cpp/decomp_test_dbg';
@@ -60,7 +59,7 @@ if (numWorkers > 0) {
     const tsStart = performance.now();
 
     const progressWriter = { write: (s: string) => process.stderr.write(s) };
-    const pd = new WorkerParallelDecompiler(xmlFile, SLEIGH_PATH, numWorkers, progressWriter, enhancedDisplay);
+    const pd = new WorkerParallelDecompiler(xmlFile, numWorkers, progressWriter, enhancedDisplay);
     console.log(`Found ${pd.getFunctionCount()} functions\n`);
 
     const results = await pd.decompileAll();
@@ -86,7 +85,7 @@ if (numWorkers > 0) {
     }
 } else {
     // Sequential path (original behavior)
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
 
     const tsMemBefore = process.memoryUsage();
     const tsStart = performance.now();
@@ -119,7 +118,7 @@ try {
         ? `/usr/bin/time -l "${CPP_BIN}" -usesleighenv -path "${dir}" datatests ${basename} 2>&1`
         : `/usr/bin/time -v "${CPP_BIN}" -usesleighenv -path "${dir}" datatests ${basename} 2>&1`;
     cppAllOutput = execSync(timeCmd, {
-        env: { ...process.env, SLEIGHHOME: SLEIGH_PATH },
+        env: { ...process.env },
         encoding: 'utf8',
         cwd: process.cwd(),
         maxBuffer: 50 * 1024 * 1024,

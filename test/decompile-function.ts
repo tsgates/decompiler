@@ -8,21 +8,26 @@ import { startDecompilerLibrary } from '../src/console/libdecomp.js';
 import { FunctionTestCollection } from '../src/console/testfunction.js';
 import { StringWriter } from '../src/util/writer.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
-const xmlFile = process.argv[2];
-const funcName = process.argv[3];
+const args = process.argv.slice(2);
+const enhance = args.includes('--enhance');
+const positional = args.filter(a => a !== '--enhance');
+const xmlFile = positional[0];
+const funcName = positional[1];
 
 if (!xmlFile || !funcName) {
-  process.stderr.write('Usage: npx tsx test/decompile-function.ts <exported.xml> <function-name>\n');
+  process.stderr.write('Usage: npx tsx test/decompile-function.ts [--enhance] <exported.xml> <function-name>\n');
   process.exit(1);
 }
 
-startDecompilerLibrary(SLEIGH_PATH);
+startDecompilerLibrary();
 
 const writer = new StringWriter();
 const failures: string[] = [];
 const tc = new FunctionTestCollection(writer);
 tc.loadTest(xmlFile);
+if (enhance) {
+  tc.applyEnhancedDisplay();
+}
 tc.runTests(failures);
 const fullOutput = tc.getLastOutput();
 

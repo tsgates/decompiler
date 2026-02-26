@@ -10,7 +10,7 @@
  * fork() inherits tsx's ESM loader hooks, giving full module resolution.
  *
  * Protocol (IPC messages):
- *   Parent → Child:  {type:'init', xmlString, sleighPath, workerId}
+ *   Parent → Child:  {type:'init', xmlString, workerId}
  *   Child  → Parent: {type:'ready', workerId}
  *   Parent → Child:  {type:'assign', functionName}
  *   Child  → Parent: {type:'result', name, output, timeMs, success, error?, workerId}
@@ -43,7 +43,7 @@ function handleMessage(msg: any): void {
     workerId = msg.workerId;
     try {
       // Initialize decompiler library (each child has its own module scope)
-      startDecompilerLibrary(msg.sleighPath);
+      startDecompilerLibrary();
 
       // Create console infrastructure — ConsoleCommands registers all decompiler
       // commands (load function, decompile, print C, etc.) via IfaceCapability

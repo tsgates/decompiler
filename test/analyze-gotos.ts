@@ -8,8 +8,7 @@ import { FunctionTestCollection } from '../src/console/testfunction.js';
 import { StringWriter } from '../src/util/writer.js';
 import { block_type, block_flags } from '../src/decompiler/block.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
-startDecompilerLibrary(SLEIGH_PATH);
+startDecompilerLibrary();
 
 const xmlFile = process.argv[2];
 if (!xmlFile) { console.log('Usage: npx tsx test/analyze-gotos.ts <xml>'); process.exit(1); }

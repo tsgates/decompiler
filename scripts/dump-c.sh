@@ -21,9 +21,6 @@ find_ghidra_home() {
   if [ -n "${GHIDRA_HOME:-}" ] && [ -d "$GHIDRA_HOME" ]; then
     echo "$GHIDRA_HOME"; return
   fi
-  if [ -n "${SLEIGH_PATH:-}" ] && [ -f "$SLEIGH_PATH/support/analyzeHeadless" ]; then
-    echo "$SLEIGH_PATH"; return
-  fi
   for d in /opt/homebrew/Caskroom/ghidra/*/ghidra_*_PUBLIC /usr/local/Caskroom/ghidra/*/ghidra_*_PUBLIC; do
     if [ -d "$d" ] 2>/dev/null; then echo "$d"; return; fi
   done
@@ -38,10 +35,15 @@ find_ghidra_home() {
 
 # --- Parse arguments ---
 FRESH=0
+ENHANCE=1
 ARGS=()
 for arg in "$@"; do
   if [ "$arg" = "--fresh" ]; then
     FRESH=1
+  elif [ "$arg" = "--no-enhance" ]; then
+    ENHANCE=0
+  elif [ "$arg" = "--enhance" ]; then
+    ENHANCE=1
   else
     ARGS+=("$arg")
   fi
@@ -108,7 +110,7 @@ CACHED_XML="$CACHE_DIR/exported.xml"
 if [ "$FRESH" -eq 1 ] || [ ! -f "$CACHED_XML" ]; then
   GHIDRA_HOME="$(find_ghidra_home)" || {
     echo "Error: Cannot find Ghidra installation." >&2
-    echo "Set GHIDRA_HOME or SLEIGH_PATH to your Ghidra install directory." >&2
+    echo "Set GHIDRA_HOME to your Ghidra install directory." >&2
     exit 1
   }
 
@@ -146,13 +148,10 @@ else
 fi
 
 # --- Step 2: Decompile the function ---
-SLEIGH_PATH="${SLEIGH_PATH:-${GHIDRA_HOME:-}}"
-if [ -z "$SLEIGH_PATH" ]; then
-  SLEIGH_PATH="$(find_ghidra_home)" || {
-    echo "Error: Cannot find SLEIGH_PATH." >&2; exit 1
-  }
-fi
-
 echo "Decompiling '$FUNC_NAME'..." >&2
 cd "$PROJECT_DIR"
-SLEIGH_PATH="$SLEIGH_PATH" npx tsx test/decompile-function.ts "$CACHED_XML" "$FUNC_NAME"
+ENHANCE_FLAG=""
+if [ "$ENHANCE" -eq 1 ]; then
+  ENHANCE_FLAG="--enhance"
+fi
+npx tsx test/decompile-function.ts $ENHANCE_FLAG "$CACHED_XML" "$FUNC_NAME"

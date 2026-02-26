@@ -5,7 +5,7 @@
  * to quantify the overhead of the parallel infrastructure.
  *
  * Usage:
- *   SLEIGH_PATH=... npx tsx test/bench-clone-time.ts
+ *   npx tsx test/bench-clone-time.ts
  */
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -19,12 +19,11 @@ import { StringWriter } from '../src/util/writer.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
 const DATATESTS_DIR = path.resolve(
   __dirname, '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests'
 );
 
-startDecompilerLibrary(SLEIGH_PATH);
+startDecompilerLibrary();
 
 const testFiles = fs.readdirSync(DATATESTS_DIR)
   .filter(f => f.endsWith('.xml'))

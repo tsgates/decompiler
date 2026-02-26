@@ -8,11 +8,9 @@ import { StringWriter } from '../../src/util/writer.js';
 import { mainloop } from '../../src/console/ifacedecomp.js';
 
 const TEST_NAME = process.env.TEST_NAME || 'modulo';
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
-
 describe('Debug pcode', () => {
   it('dump pcode after decompile', { timeout: 30000 }, () => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
 
     const consoleOut = new StringWriter();
     const tc = new FunctionTestCollection(consoleOut);

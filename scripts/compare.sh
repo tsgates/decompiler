@@ -23,9 +23,6 @@ find_ghidra_home() {
   if [ -n "${GHIDRA_HOME:-}" ] && [ -d "$GHIDRA_HOME" ]; then
     echo "$GHIDRA_HOME"; return
   fi
-  if [ -n "${SLEIGH_PATH:-}" ] && [ -f "$SLEIGH_PATH/support/analyzeHeadless" ]; then
-    echo "$SLEIGH_PATH"; return
-  fi
   for d in /opt/homebrew/Caskroom/ghidra/*/ghidra_*_PUBLIC /usr/local/Caskroom/ghidra/*/ghidra_*_PUBLIC; do
     if [ -d "$d" ] 2>/dev/null; then echo "$d"; return; fi
   done
@@ -39,9 +36,8 @@ find_ghidra_home() {
 }
 
 GHIDRA_HOME="$(find_ghidra_home)" || {
-  echo "Error: Cannot find Ghidra. Set GHIDRA_HOME or SLEIGH_PATH." >&2; exit 1
+  echo "Error: Cannot find Ghidra. Set GHIDRA_HOME." >&2; exit 1
 }
-SLEIGH_PATH="${SLEIGH_PATH:-$GHIDRA_HOME}"
 WORK_DIR=$(mktemp -d)
 trap "rm -rf $WORK_DIR" EXIT
 
@@ -114,7 +110,7 @@ fi
 echo ""
 echo "[2/3] Running C++ and TS decompilers..."
 cd "$PROJECT_DIR"
-SLEIGH_PATH="$SLEIGH_PATH" npx tsx test/run-compare-binary.ts "$WORK_DIR/exported.xml" "$OUTPUT_DIR" 2>&1
+npx tsx test/run-compare-binary.ts "$WORK_DIR/exported.xml" "$OUTPUT_DIR" 2>&1
 
 echo ""
 echo "[3/3] Done."

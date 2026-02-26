@@ -6,7 +6,7 @@
  *   2. Real binary XML from output/cache/ if available — worker parallelism
  *
  * Usage:
- *   SLEIGH_PATH=... npx tsx test/bench-parallel-workers.ts [binary.xml]
+ *   npx tsx test/bench-parallel-workers.ts [binary.xml]
  */
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -22,7 +22,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
 const DATATESTS_DIR = process.env.DATATESTS_PATH || path.resolve(
   __dirname, '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests'
 );
@@ -66,7 +65,7 @@ if (datatestFiles.length > 0) {
   console.log(`=== Datatests: ${datatestFiles.length} files ===`);
 
   // Initialize library for sequential runs
-  startDecompilerLibrary(SLEIGH_PATH);
+  startDecompilerLibrary();
 
   // Warmup
   {
@@ -136,7 +135,7 @@ if (xmlsToTest.length === 0) {
 
     // Sequential baseline (using FunctionTestCollection) — single run for both timing and output
     if (!datatestFiles.length) {
-      startDecompilerLibrary(SLEIGH_PATH);
+      startDecompilerLibrary();
     }
     let seqOutput: string;
     let seqTime: number;
@@ -155,7 +154,7 @@ if (xmlsToTest.length === 0) {
     // Worker runs at various concurrency levels
     for (const nWorkers of uniqueCounts) {
       const nullWriter = { write: (_s: string) => {} };
-      const pd = new WorkerParallelDecompiler(xmlPath, SLEIGH_PATH, nWorkers, nullWriter);
+      const pd = new WorkerParallelDecompiler(xmlPath, nWorkers, nullWriter);
 
       const wStart = performance.now();
       const results = await pd.decompileAll();

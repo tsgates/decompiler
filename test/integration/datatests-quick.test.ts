@@ -10,7 +10,6 @@ import { startDecompilerLibrary } from '../../src/console/libdecomp.js';
 import { FunctionTestCollection } from '../../src/console/testfunction.js';
 import { StringWriter } from '../../src/util/writer.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/ghidra';
 const DATATESTS_PATH = process.env.DATATESTS_PATH || path.resolve(
   __dirname, '..', '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests'
 );
@@ -40,7 +39,7 @@ function runWithTimeout<T>(fn: () => T, timeoutMs: number): { result: T | null; 
 
 describe('Decompiler datatests (quick)', () => {
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   it('all datatests', { timeout: 600000 }, () => {

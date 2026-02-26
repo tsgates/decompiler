@@ -11,8 +11,6 @@
 
 set -euo pipefail
 
-SLEIGH_PATH="${SLEIGH_PATH:-/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC}"
-export SLEIGH_PATH
 CACHE_BASE="test/quality/results/.cache"
 VERBOSE="${1:-}"
 
@@ -54,8 +52,7 @@ import { startDecompilerLibrary } from '../src/console/libdecomp.js';
 import { FunctionTestCollection } from '../src/console/testfunction.js';
 import { StringWriter } from '../src/util/writer.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH!;
-startDecompilerLibrary(SLEIGH_PATH);
+startDecompilerLibrary();
 
 const xmlFile = process.argv[2];
 const mode = process.argv[3]; // 'normal' or 'enhanced'

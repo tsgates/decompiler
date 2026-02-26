@@ -10,11 +10,9 @@ import { mainloop } from '../../src/console/ifacedecomp.js';
 
 const DATATESTS = 'ghidra-src/Ghidra/Features/Decompiler/src/decompile/datatests';
 const TEST_NAME = process.env.TEST_NAME || 'convert';
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
-
 describe('Debug test', () => {
   it(TEST_NAME, { timeout: 30000 }, () => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
 
     const consoleOut = new StringWriter();
     const tc = new FunctionTestCollection(consoleOut);

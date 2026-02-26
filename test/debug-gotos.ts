@@ -7,8 +7,7 @@ import { startDecompilerLibrary } from '../src/console/libdecomp.js';
 import { FunctionTestCollection } from '../src/console/testfunction.js';
 import { StringWriter } from '../src/util/writer.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/homebrew/Caskroom/ghidra/11.4.2-20250826/ghidra_11.4.2_PUBLIC';
-startDecompilerLibrary(SLEIGH_PATH);
+startDecompilerLibrary();
 
 const args = process.argv.slice(2);
 const enhanced = args.includes('--enhance');
