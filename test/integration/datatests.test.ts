@@ -15,25 +15,37 @@ import { startDecompilerLibrary } from '../../src/console/libdecomp.js';
 import { FunctionTestCollection } from '../../src/console/testfunction.js';
 import { StringWriter } from '../../src/util/writer.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/ghidra';
 const DATATESTS_PATH = process.env.DATATESTS_PATH || path.resolve(
   __dirname, '..', '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests'
 );
 
-// Gather all test files
+// Processors available via bundled spec files
+const BUNDLED_PROCESSORS = new Set(['x86', 'AARCH64', 'ARM']);
+
+function getProcessor(xmlPath: string): string | null {
+  const content = fs.readFileSync(xmlPath, 'utf-8');
+  const m = content.match(/arch="([^":]+)/);
+  return m ? m[1] : null;
+}
+
+// Gather test files, filtering to architectures we have spec files for
 let testFiles: string[] = [];
 try {
   testFiles = fs.readdirSync(DATATESTS_PATH)
     .filter(f => f.endsWith('.xml'))
     .sort()
-    .map(f => path.join(DATATESTS_PATH, f));
+    .map(f => path.join(DATATESTS_PATH, f))
+    .filter(f => {
+      const proc = getProcessor(f);
+      return proc !== null && BUNDLED_PROCESSORS.has(proc);
+    });
 } catch {
   // Directory may not exist in CI; tests will be skipped
 }
 
 describe('Decompiler datatests', () => {
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
   });
 
   if (testFiles.length === 0) {

@@ -24,10 +24,18 @@ import { DAGScheduler, FuncdataRegion, type ActionDependencyDecl } from '../../s
 import { CommentDatabaseInternal } from '../../src/decompiler/comment.js';
 import { Address } from '../../src/core/address.js';
 
-const SLEIGH_PATH = process.env.SLEIGH_PATH || '/opt/ghidra';
 const DATATESTS_DIR = process.env.DATATESTS_PATH || path.resolve(
   __dirname, '..', '..', 'ghidra-src', 'Ghidra', 'Features', 'Decompiler', 'src', 'decompile', 'datatests'
 );
+
+// Processors available via bundled spec files
+const BUNDLED_PROCESSORS = new Set(['x86', 'AARCH64', 'ARM']);
+
+function getProcessor(xmlPath: string): string | null {
+  const content = fs.readFileSync(xmlPath, 'utf-8');
+  const m = content.match(/arch="([^":]+)/);
+  return m ? m[1] : null;
+}
 
 // ---------------------------------------------------------------------------
 // DAGScheduler unit tests
@@ -150,14 +158,19 @@ describe('Action tree cloning', () => {
   let testFile: string | null = null;
 
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
-    // Find a test file to use
+    startDecompilerLibrary();
+    // Find a test file with a bundled architecture
     try {
       const files = fs.readdirSync(DATATESTS_DIR)
         .filter(f => f.endsWith('.xml'))
         .sort();
-      if (files.length > 0) {
-        testFile = path.join(DATATESTS_DIR, files[0]);
+      for (const f of files) {
+        const full = path.join(DATATESTS_DIR, f);
+        const proc = getProcessor(full);
+        if (proc && BUNDLED_PROCESSORS.has(proc)) {
+          testFile = full;
+          break;
+        }
       }
     } catch {
       // No test files available
@@ -199,12 +212,16 @@ describe('Parallel decompilation correctness', () => {
   let testFiles: string[] = [];
 
   beforeAll(() => {
-    startDecompilerLibrary(SLEIGH_PATH);
+    startDecompilerLibrary();
     try {
       testFiles = fs.readdirSync(DATATESTS_DIR)
         .filter(f => f.endsWith('.xml'))
         .sort()
-        .map(f => path.join(DATATESTS_DIR, f));
+        .map(f => path.join(DATATESTS_DIR, f))
+        .filter(f => {
+          const proc = getProcessor(f);
+          return proc !== null && BUNDLED_PROCESSORS.has(proc);
+        });
     } catch {
       // No test files
     }
