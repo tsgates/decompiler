@@ -5,7 +5,7 @@
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
-import { FlowBlock, BlockGraph, BlockGoto, BlockIf, BlockMultiGoto, BlockWhileDo, block_type } from './block.js';
+import { FlowBlock, BlockGraph, BlockGoto, BlockIf, BlockMultiGoto, BlockWhileDo, block_type, block_flags } from './block.js';
 import { PcodeOp } from './op.js';
 import { Action, ActionGroupList } from './action.js';
 import { OpCode } from '../core/opcodes.js';
@@ -2444,6 +2444,16 @@ export class ActionBlockStructure extends Action {
 
     // Check if already structured
     if (graph.getSize() !== 0) return 0;
+
+    // Pre-structuring CFG transformations (enhanced display only)
+    if (data.getArch().enhancedDisplay) {
+      const retDups = this.eagerReturnDuplication(data);
+      const xjDups = this.crossJumpReversal(data);
+      if (retDups > 0 || xjDups > 0) {
+        data._transformStats = { returnDuplications: retDups, crossJumpReversals: xjDups };
+      }
+    }
+
     data.installSwitchDefaults();
     graph.buildCopy(data.getBasicBlocks());
 
@@ -2452,6 +2462,112 @@ export class ActionBlockStructure extends Action {
     this.count += collapse.getChangeCount();
 
     return 0;
+  }
+
+  /**
+   * SAILR ISC Pass 1: Eager Return Duplication.
+   *
+   * When a return block has multiple predecessors, the convergence often
+   * forces gotos during structuring.  By giving each predecessor its own
+   * copy of the return block, we eliminate these convergence points.
+   *
+   * Uses the existing Funcdata.nodeSplit() which is designed for terminal
+   * blocks (sizeOut === 0) with multiple in-edges.
+   */
+  private eagerReturnDuplication(data: Funcdata): number {
+    const bblocks: BlockGraph = data.getBasicBlocks();
+    let totalDups = 0;
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < bblocks.getSize(); ++i) {
+        const bb: any = bblocks.getBlock(i);
+        // Must be a terminal block (no successors) with 2+ predecessors
+        if (bb.sizeOut() !== 0 || bb.sizeIn() < 2) continue;
+        // Check that the block ends with a RETURN op
+        const ops: PcodeOp[] = bb.getOpList ? bb.getOpList() : (bb.op || []);
+        if (ops.length === 0) continue;
+        const lastOp = ops[ops.length - 1];
+        if (lastOp.code() !== OpCode.CPUI_RETURN) continue;
+        // Safety: skip blocks with CALLs or INDIRECTs (can't be cloned)
+        let canClone = true;
+        for (const op of ops) {
+          if (op.isCall() || op.code() === OpCode.CPUI_INDIRECT) {
+            canClone = false;
+            break;
+          }
+        }
+        if (!canClone) continue;
+        // Limit: don't duplicate huge blocks (more than 20 ops)
+        if (ops.length > 20) continue;
+        // Split off all but the last in-edge
+        while (bb.sizeIn() > 1) {
+          data.nodeSplit(bb, 0);
+          totalDups++;
+          changed = true;
+        }
+        if (changed) break; // Restart scan after CFG modification
+      }
+    }
+    return totalDups;
+  }
+
+  /**
+   * SAILR ISC Pass 2: Cross-Jump Reversal.
+   *
+   * Reverses compiler tail-merging by duplicating small blocks that feed
+   * into return/terminal blocks.  This is the safest subset of cross-jump
+   * reversal — it only targets "pre-return" convergence points where
+   * multiple paths merge before reaching a return.
+   *
+   * After eager return duplication has given each path its own return
+   * block, some paths still share a small "setup" block before the return.
+   * This pass duplicates those setup blocks.
+   */
+  private crossJumpReversal(data: Funcdata): number {
+    const bblocks: BlockGraph = data.getBasicBlocks();
+    const MAX_OPS = 6;
+    const MAX_TOTAL_DUPS = 20;
+    let totalDups = 0;
+
+    let changed = true;
+    while (changed && totalDups < MAX_TOTAL_DUPS) {
+      changed = false;
+      for (let i = 0; i < bblocks.getSize(); ++i) {
+        const bb: any = bblocks.getBlock(i);
+        if (bb.sizeOut() !== 1 || bb.sizeIn() < 2) continue;
+        if (bb.isEntryPoint()) continue;
+        if (bb.getFlags() & block_flags.f_duplicate_block) continue;
+
+        // Only duplicate if successor is a terminal block (return/exit)
+        const succ: any = bb.getOut(0);
+        if (succ.sizeOut() !== 0) continue;
+
+        const ops: PcodeOp[] = bb.getOpList ? bb.getOpList() : (bb.op || []);
+        let realOps = 0;
+        let canClone = true;
+        for (const op of ops) {
+          if (op.isCall() || op.code() === OpCode.CPUI_INDIRECT) {
+            canClone = false;
+            break;
+          }
+          if (!op.isBranch()) realOps++;
+        }
+        if (!canClone || realOps > MAX_OPS) continue;
+
+        while (bb.sizeIn() > 1 && totalDups < MAX_TOTAL_DUPS) {
+          try {
+            data.nodeSplitGeneral(bb, 0);
+            totalDups++;
+          } catch {
+            break;
+          }
+          changed = true;
+        }
+        if (changed) break;
+      }
+    }
+    return totalDups;
   }
 }
 

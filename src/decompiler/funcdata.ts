@@ -2224,6 +2224,22 @@ export class Funcdata {
     this.structureReset();
   }
 
+  /// Generalized node split that also handles blocks with out-edges.
+  /// The block must have sizeIn() >= 2 and no CALLs/INDIRECTs.
+  /// For single-successor blocks, the unconditional BRANCH is skipped
+  /// during cloning (edges are handled structurally by nodeSplitBlockEdge).
+  nodeSplitGeneral(b: BlockBasic, inedge: number): void {
+    if (b.sizeIn() <= 1) {
+      throw new LowlevelError("Cannot nodesplit block with only 1 in edge");
+    }
+    // Create duplicate block with correct edge structure
+    const bprime: BlockBasic = this.nodeSplitBlockEdge(b, inedge);
+    // Clone p-code ops (branches are automatically skipped by CloneBlockOps)
+    const cloner = new CloneBlockOps(this);
+    cloner.cloneBlock(b, bprime, inedge);
+    this.structureReset();
+  }
+
   /// Remove a basic block splitting its control-flow into two distinct paths.
   /// The given block must have 2 inputs and 2 outputs, (and no operations).
   removeFromFlowSplit(bl: BlockBasic, swap: boolean): void {

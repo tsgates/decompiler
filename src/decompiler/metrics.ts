@@ -26,6 +26,16 @@ export interface FunctionMetrics {
   switchCount: number;
   labelCount: number;
   boolConditionCount: number; // BlockCondition (&&/||) nodes
+  totalBlocks: number;       // Total structured blocks
+  infLoopCount: number;      // Infinite loops (loop { })
+}
+
+/**
+ * Tracks pre-structuring CFG transformations applied by enhanced display mode.
+ */
+export interface TransformStats {
+  returnDuplications: number;  // Blocks split by eager return duplication
+  crossJumpReversals: number;  // Blocks split by cross-jump reversal
 }
 
 export function createEmptyMetrics(name: string): FunctionMetrics {
@@ -41,6 +51,15 @@ export function createEmptyMetrics(name: string): FunctionMetrics {
     switchCount: 0,
     labelCount: 0,
     boolConditionCount: 0,
+    totalBlocks: 0,
+    infLoopCount: 0,
+  };
+}
+
+export function createEmptyTransformStats(): TransformStats {
+  return {
+    returnDuplications: 0,
+    crossJumpReversals: 0,
   };
 }
 
@@ -63,6 +82,7 @@ export function collectFunctionMetrics(fd: Funcdata): FunctionMetrics {
 function walkBlock(bl: FlowBlock, depth: number, metrics: FunctionMetrics): void {
   if (bl == null) return;
 
+  metrics.totalBlocks++;
   const type: number = bl.getType();
 
   switch (type) {
@@ -97,6 +117,10 @@ function walkBlock(bl: FlowBlock, depth: number, metrics: FunctionMetrics): void
           }
         }
       }
+      break;
+
+    case block_type.t_infloop: // 12
+      metrics.infLoopCount++;
       break;
 
     case block_type.t_condition: // 7
@@ -180,6 +204,8 @@ export interface AggregateMetrics {
   totalSwitch: number;
   totalLabels: number;
   totalBoolConditions: number;
+  totalBlocks: number;
+  totalInfLoops: number;
 }
 
 export function aggregateMetrics(funcs: FunctionMetrics[]): AggregateMetrics {
@@ -195,6 +221,8 @@ export function aggregateMetrics(funcs: FunctionMetrics[]): AggregateMetrics {
     totalSwitch: 0,
     totalLabels: 0,
     totalBoolConditions: 0,
+    totalBlocks: 0,
+    totalInfLoops: 0,
   };
 
   for (const m of funcs) {
@@ -210,6 +238,8 @@ export function aggregateMetrics(funcs: FunctionMetrics[]): AggregateMetrics {
     agg.totalSwitch += m.switchCount;
     agg.totalLabels += m.labelCount;
     agg.totalBoolConditions += m.boolConditionCount;
+    agg.totalBlocks += m.totalBlocks;
+    agg.totalInfLoops += m.infLoopCount;
   }
 
   return agg;

@@ -38,8 +38,14 @@ typedef unsigned long long unk8;
 typedef float float4;
 typedef double float8;
 
-/* Misc types */
+/* Bool and true/false */
 typedef unsigned char bool;
+#ifndef true
+#define true 1
+#endif
+#ifndef false
+#define false 0
+#endif
 typedef unsigned char undefined;
 typedef unsigned char undefined1;
 typedef unsigned short undefined2;

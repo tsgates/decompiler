@@ -2959,8 +2959,9 @@ export class PrintC extends PrintLanguage {
     const targetLeaf = target.getFrontLeaf();
     if (targetLeaf == null) return null;
 
-    // Walk up parent chain looking for an enclosing loop
+    // Walk up parent chain looking for an enclosing loop or switch
     let cur = ifBlock.getParent();
+    let loopDepth = 0;
     while (cur != null) {
       const type: number = cur.getType();
       if (type === block_type.t_whiledo || type === block_type.t_dowhile ||
@@ -2968,10 +2969,20 @@ export class PrintC extends PrintLanguage {
         // Check if goto target matches this loop's exit
         const exitLeaf = this.findLoopExitLeaf(cur);
         if (exitLeaf != null && exitLeaf === targetLeaf) {
-          return cur;  // Single-level break
+          // Only convert to break if this is the innermost loop
+          // (C doesn't support labeled breaks for multi-level exit)
+          if (loopDepth === 0) return cur;
+          return null;
         }
-        // Don't check outer loops — that would be multi-level break (Phase 3)
-        return null;
+        loopDepth++;
+        // Continue checking outer scopes — the goto might exit a switch
+      } else if (type === block_type.t_switch) {
+        // Check if goto target matches switch's exit
+        const exitLeaf = this.findLoopExitLeaf(cur);
+        if (exitLeaf != null && exitLeaf === targetLeaf) {
+          if (loopDepth === 0) return cur;
+          return null;
+        }
       }
       cur = cur.getParent();
     }
@@ -2992,15 +3003,23 @@ export class PrintC extends PrintLanguage {
     if (targetLeaf == null) return null;
 
     let cur = gotoBlock.getParent();
+    let loopDepth = 0;
     while (cur != null) {
       const type: number = cur.getType();
       if (type === block_type.t_whiledo || type === block_type.t_dowhile ||
           type === block_type.t_infloop) {
         const exitLeaf = this.findLoopExitLeaf(cur);
         if (exitLeaf != null && exitLeaf === targetLeaf) {
-          return cur;
+          if (loopDepth === 0) return cur;
+          return null;
         }
-        return null;
+        loopDepth++;
+      } else if (type === block_type.t_switch) {
+        const exitLeaf = this.findLoopExitLeaf(cur);
+        if (exitLeaf != null && exitLeaf === targetLeaf) {
+          if (loopDepth === 0) return cur;
+          return null;
+        }
       }
       cur = cur.getParent();
     }
