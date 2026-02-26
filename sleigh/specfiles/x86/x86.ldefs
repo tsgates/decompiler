@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<language_definitions>
+  <language processor="x86"
+            endian="little"
+            size="32"
+            variant="default"
+            version="4.6"
+            slafile="x86.sla"
+            processorspec="x86.pspec"
+            id="x86:LE:32:default">
+    <description>Intel/AMD 32-bit x86</description>
+    <compiler name="Visual Studio" spec="x86win.cspec" id="windows"/>
+    <compiler name="gcc" spec="x86gcc.cspec" id="gcc"/>
+  </language>
+  <language processor="x86"
+            endian="little"
+            size="64"
+            variant="default"
+            version="4.6"
+            slafile="x86-64.sla"
+            processorspec="x86-64.pspec"
+            id="x86:LE:64:default">
+    <description>Intel/AMD 64-bit x86</description>
+    <compiler name="Visual Studio" spec="x86-64-win.cspec" id="windows"/>
+    <compiler name="gcc" spec="x86-64-gcc.cspec" id="gcc"/>
+  </language>
+</language_definitions>

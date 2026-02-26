@@ -334,7 +334,7 @@ function mainloop(status: IfaceStatus): void {
  * Main entry point for the console decompiler.
  *
  * 1. Parse command-line arguments (-i initscript, -s specpath).
- * 2. Discover the Ghidra root from argv[0] or the SLEIGHHOME env variable.
+ * 2. Discover the Ghidra root from argv[0] (bundled specs are used as fallback).
  * 3. Initialise the decompiler library.
  * 4. Create an IfaceTerm console, register all commands plus the four
  *    console-specific commands (load file, addpath, save, restore).
@@ -378,21 +378,10 @@ export function main(args: string[]): number {
       i += 1;
     }
 
-    // Discover ghidra root from the script location or SLEIGHHOME
-    let ghidraroot: string = FileManage.discoverGhidraRoot(process.argv[1] ?? '');
-    if (ghidraroot.length === 0) {
-      const sleighhomepath = process.env.SLEIGHHOME;
-      if (sleighhomepath == null || sleighhomepath.length === 0) {
-        if (extrapaths.length === 0) {
-          process.stderr.write('Could not discover root of Ghidra installation\n');
-          process.exit(1);
-        }
-      } else {
-        ghidraroot = sleighhomepath;
-      }
-    }
+    // Discover ghidra root from the script location (bundled specs used as fallback)
+    const ghidraroot: string = FileManage.discoverGhidraRoot(process.argv[1] ?? '');
 
-    startDecompilerLibrary(ghidraroot, extrapaths);
+    startDecompilerLibrary(ghidraroot.length > 0 ? ghidraroot : undefined, extrapaths);
   }
 
   // Create the console interface.

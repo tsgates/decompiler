@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 import { AttributeId, ElementId, XmlDecode, ATTRIB_CONTENT, ATTRIB_ID, ATTRIB_NAME, ATTRIB_SIZE } from '../core/marshal.js';
 import { LowlevelError, DecoderError } from '../core/error.js';
@@ -707,6 +708,27 @@ export class SleighArchitecture extends Architecture {
 
     for (let i = 0; i < languagesubdirs.length; ++i)
       specpaths.addDir2Path(languagesubdirs[i]);
+  }
+
+  /**
+   * Scan for bundled spec files shipped with this package.
+   * Looks in sleigh/specfiles/ relative to the project root.
+   * Each subdirectory (x86, AARCH64, ARM, ...) is added as a spec path.
+   */
+  static scanForBundledSpecs(): void {
+    const thisFile = fileURLToPath(import.meta.url);
+    const bundledRoot = path.resolve(path.dirname(thisFile), '../../sleigh/specfiles');
+    if (!fs.existsSync(bundledRoot)) return;
+    try {
+      const entries = fs.readdirSync(bundledRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          specpaths.addDir2Path(path.join(bundledRoot, entry.name));
+        }
+      }
+    } catch {
+      // bundled specfiles not available
+    }
   }
 
   /**

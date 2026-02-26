@@ -16,7 +16,7 @@ import { SleighArchitecture, specpaths } from '../console/sleigh_arch.js';
  * In C++ there are three overloads; here we combine them into a single function
  * with optional parameters.
  *
- * @param sleighhome - optional root path for scanning sleigh directories
+ * @param sleighhome - optional root path for scanning sleigh directories; when omitted, bundled spec files are used
  * @param extrapaths - optional array of additional specification paths
  */
 export function startDecompilerLibrary(
@@ -30,6 +30,8 @@ export function startDecompilerLibrary(
 
   if (sleighhome != null) {
     SleighArchitecture.scanForSleighDirectories(sleighhome);
+  } else {
+    SleighArchitecture.scanForBundledSpecs();
   }
 
   if (extrapaths !== undefined) {

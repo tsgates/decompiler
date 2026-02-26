@@ -1,0 +1,16 @@
+<?xml version="1.1" encoding="UTF-8"?>
+<language_definitions>
+
+  <language processor="ARM"
+            endian="little"
+            size="32"
+            variant="v8"
+            version="1.107"
+            slafile="ARM8_le.sla"
+            processorspec="ARMt.pspec"
+            id="ARM:LE:32:v8">
+    <description>Generic ARM/Thumb v8 little endian</description>
+    <compiler name="default" spec="ARM.cspec" id="default"/>
+  </language>
+
+</language_definitions>
