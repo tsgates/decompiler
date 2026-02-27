@@ -44,8 +44,9 @@ let currentName: string | null = null;
 let currentLines: string[] = [];
 
 for (const line of lines) {
-  // Match function signature: "type funcname(" at start of line
-  const m = line.match(/^\S+\s+(\S+?)\s*\(/);
+  // Match function signature: last identifier before '(' — handles multi-word return types
+  // ^\S requires line starts at column 0 (not indented), excluding body lines like "  if ("
+  const m = line.match(/^\S.+?\b(\w+)\s*\(/);
   if (m) {
     // Save previous function
     if (currentName !== null) {
