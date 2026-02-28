@@ -678,7 +678,6 @@ export abstract class Architecture extends AddrSpaceManager {
     this.enhancedDisplay = true;
     if (this.types) this.types.applyEnhancedDisplayNames();
     if (this.print) {
-      (this.print as any).setShowAddresses(true);
       (this.print as any).setNULLPrinting(true);
       (this.print as any).setInplaceOps(true);
     }
