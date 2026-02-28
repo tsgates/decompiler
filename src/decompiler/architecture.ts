@@ -677,7 +677,11 @@ export abstract class Architecture extends AddrSpaceManager {
   applyEnhancedDisplay(): void {
     this.enhancedDisplay = true;
     if (this.types) this.types.applyEnhancedDisplayNames();
-    if (this.print) (this.print as any).setShowAddresses(true);
+    if (this.print) {
+      (this.print as any).setShowAddresses(true);
+      (this.print as any).setNULLPrinting(true);
+      (this.print as any).setInplaceOps(true);
+    }
   }
 
   /**
@@ -859,7 +863,8 @@ export abstract class Architecture extends AddrSpaceManager {
    */
   nameFunction(addr: Address): string {
     let defname = "func_";
-    defname += addr.printRaw();
+    const raw = addr.printRaw();
+    defname += this.enhancedDisplay ? raw.replace(/^0x/, '') : raw;
     return defname;
   }
 

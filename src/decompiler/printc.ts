@@ -243,6 +243,10 @@ export class PrintC extends PrintLanguage {
   protected static orequal           = new OpToken("|=",  "",   2,    14,  false, tokentype.binary,          1,    5,   null);
   protected static xorequal          = new OpToken("^=",  "",   2,    14,  false, tokentype.binary,          1,    5,   null);
 
+  // Increment/decrement (prefix form, used in enhanced display)
+  protected static pre_increment     = new OpToken("++",  "",   1,    62,  false, tokentype.unary_prefix,    0,    0,   null);
+  protected static pre_decrement     = new OpToken("--",  "",   1,    62,  false, tokentype.unary_prefix,    0,    0,   null);
+
   // Type expression operators
   protected static type_expr_space   = new OpToken("",    "",   2,    10,  false, tokentype.space,           1,    0,   null);
   protected static type_expr_nospace = new OpToken("",    "",   2,    10,  false, tokentype.space,           0,    0,   null);
@@ -579,6 +583,73 @@ export class PrintC extends PrintLanguage {
     return true;
   }
 
+  /**
+   * Enhanced display: detect *(type *)(base + idx * stride) array pattern.
+   * Returns {base, index} if the address varnode is an INT_ADD(base, INT_MULT(idx, stride))
+   * where stride matches the element size (loadSize).
+   */
+  private checkArrayAddMult(addrVn: Varnode, elemSize: number):
+      { base: Varnode, index: Varnode, castOp: PcodeOp | null } | null {
+    if (!this.glb.enhancedDisplay) return null;
+    if (!addrVn.isWritten()) return null;
+    // Unwrap CAST op(s) to reach the INT_ADD underneath
+    let innerVn = addrVn;
+    let castOp: PcodeOp | null = null;
+    // For non-implied varnodes, try unwrapping one CAST level
+    if (!innerVn.isImplied()) {
+      const defOp = innerVn.getDef();
+      if (defOp.code() === OpCode.CPUI_CAST) {
+        castOp = defOp;
+        innerVn = defOp.getIn(0);
+        if (!innerVn.isWritten()) return null;
+      } else {
+        return null;
+      }
+    }
+    // For implied varnodes, also unwrap CAST to reach the INT_ADD
+    if (innerVn.isImplied() && innerVn.isWritten()) {
+      const defOp = innerVn.getDef();
+      if (defOp.code() === OpCode.CPUI_CAST) {
+        const castIn = defOp.getIn(0);
+        if (castIn.isImplied() && castIn.isWritten()) {
+          if (castOp === null) castOp = defOp;
+          innerVn = castIn;
+        }
+      }
+    }
+    if (!innerVn.isImplied() || !innerVn.isWritten()) return null;
+    const addOp = innerVn.getDef();
+    if (addOp.code() !== OpCode.CPUI_INT_ADD) return null;
+
+    // Try both orderings: ADD(base, MULT(idx, stride)) or ADD(MULT(...), base)
+    for (const [multSlot, baseSlot] of [[1, 0], [0, 1]]) {
+      const multVn = addOp.getIn(multSlot);
+      const baseVn = addOp.getIn(baseSlot);
+      if (!multVn.isImplied() || !multVn.isWritten()) continue;
+      const multOp = multVn.getDef();
+      if (multOp.code() !== OpCode.CPUI_INT_MULT) continue;
+      const strideVn = multOp.getIn(1);
+      if (!strideVn.isConstant()) continue;
+      const stride = Number(strideVn.getOffset());
+      if (stride !== elemSize || stride === 0) continue;
+
+      // Base must be an explicit (named) variable, not a temporary/unique
+      if (baseVn.isImplied()) continue;
+
+      // Extract index, stripping SEXT/ZEXT wrapper if present
+      let indexVn = multOp.getIn(0);
+      if (indexVn.isImplied() && indexVn.isWritten()) {
+        const extOp = indexVn.getDef();
+        if (extOp.code() === OpCode.CPUI_INT_SEXT ||
+            extOp.code() === OpCode.CPUI_INT_ZEXT) {
+          indexVn = extOp.getIn(0);
+        }
+      }
+      return { base: baseVn, index: indexVn, castOp };
+    }
+    return null;
+  }
+
   // -----------------------------------------------------------------------
   // checkAddressOfCast
   // -----------------------------------------------------------------------
@@ -655,6 +726,18 @@ export class PrintC extends PrintLanguage {
         return;
       }
     }
+    // Enhanced display: suppress void* → typed pointer casts (implicit in C)
+    if (this.glb.enhancedDisplay && !this.option_nocasts) {
+      const inType = op.getIn(0).getHighTypeReadFacing(op);
+      if (dt.getMetatype() === type_metatype.TYPE_PTR &&
+          inType.getMetatype() === type_metatype.TYPE_PTR) {
+        const inBase = inType.getPtrTo();
+        if (inBase.getMetatype() === type_metatype.TYPE_VOID) {
+          this.pushVn(op.getIn(0), op, this.mods);
+          return;
+        }
+      }
+    }
     if (!this.option_nocasts) {
       this.pushOp(PrintC.typecast, op);
       this.pushType(dt);
@@ -715,29 +798,66 @@ export class PrintC extends PrintLanguage {
     this.pushVn(op.getIn(0), op, this.mods);
   }
 
-  opLoad(op: PcodeOp): void {
-    const usearray: boolean = this.checkArrayDeref(op.getIn(1));
-    let m: number = this.mods;
-    if (usearray && !this.isSet(modifiers.force_pointer))
-      m |= modifiers.print_load_value;
-    else {
-      this.pushOp(PrintC.dereference, op);
+  /**
+   * Push base varnode with optional typecast from array pattern detection.
+   * Uses pushVnExplicit so the base (and its cast) resolve immediately on the
+   * RPN stack, avoiding ordering issues with pending varnodes.
+   */
+  private pushArrayBase(arr: { base: Varnode, index: Varnode, castOp: PcodeOp | null },
+      op: PcodeOp): void {
+    if (arr.castOp !== null && !this.option_nocasts) {
+      const dt = arr.castOp.getOut().getHighTypeDefFacing();
+      this.pushOp(PrintC.typecast, arr.castOp);
+      this.pushType(dt);
     }
-    this.pushVn(op.getIn(1), op, m);
+    this.pushVnExplicit(arr.base, op);
+  }
+
+  opLoad(op: PcodeOp): void {
+    const addrVn = op.getIn(1);
+    const usearray: boolean = this.checkArrayDeref(addrVn);
+    let m: number = this.mods;
+    if (usearray && !this.isSet(modifiers.force_pointer)) {
+      m |= modifiers.print_load_value;
+      this.pushVn(addrVn, op, m);
+    } else {
+      const arr = this.checkArrayAddMult(addrVn, op.getOut().getSize());
+      if (arr) {
+        this.pushOp(PrintC.subscript, op);
+        // Push base first (immediately resolved via pushVnExplicit inside pushArrayBase),
+        // then index as pending — ensures correct subscript ordering: base[index]
+        this.pushArrayBase(arr, op);
+        this.pushVn(arr.index, op, this.mods);
+      } else {
+        this.pushOp(PrintC.dereference, op);
+        this.pushVn(addrVn, op, m);
+      }
+    }
   }
 
   opStore(op: PcodeOp): void {
+    const addrVn = op.getIn(1);
     let m: number = this.mods;
     this.pushOp(PrintC.assignment, op);
-    const usearray: boolean = this.checkArrayDeref(op.getIn(1));
-    if (usearray && !this.isSet(modifiers.force_pointer))
+    const usearray: boolean = this.checkArrayDeref(addrVn);
+    if (usearray && !this.isSet(modifiers.force_pointer)) {
       m |= modifiers.print_store_value;
-    else {
-      this.pushOp(PrintC.dereference, op);
+      this.pushVn(op.getIn(2), op, this.mods);
+      this.pushVn(addrVn, op, m);
+    } else {
+      const arr = this.checkArrayAddMult(addrVn, op.getIn(2).getSize());
+      if (arr) {
+        this.pushVn(op.getIn(2), op, this.mods);
+        this.pushOp(PrintC.subscript, op);
+        this.pushArrayBase(arr, op);
+        this.pushVn(arr.index, op, this.mods);
+      } else {
+        this.pushOp(PrintC.dereference, op);
+        // implied vn's pushed on in reverse order for efficiency
+        this.pushVn(op.getIn(2), op, this.mods);
+        this.pushVn(addrVn, op, m);
+      }
     }
-    // implied vn's pushed on in reverse order for efficiency
-    this.pushVn(op.getIn(2), op, this.mods);
-    this.pushVn(op.getIn(1), op, m);
   }
 
   opBranch(op: PcodeOp): void {
@@ -993,7 +1113,7 @@ export class PrintC extends PrintLanguage {
     if (this.castStrategy!.isZextCast(op.getOut().getHighTypeDefFacing(), op.getIn(0).getHighTypeReadFacing(op))) {
       if (this.option_hide_exts && this.castStrategy!.isExtensionCastImplied(op, readOp))
         this.opHiddenFunc(op);
-      else if (this.glb.enhancedDisplay && this.isExtensionRedundant(op))
+      else if (this.glb.enhancedDisplay && this.isExtensionRedundant(op, readOp))
         this.opHiddenFunc(op);
       else
         this.opTypeCast(op);
@@ -1005,7 +1125,7 @@ export class PrintC extends PrintLanguage {
     if (this.castStrategy!.isSextCast(op.getOut().getHighTypeDefFacing(), op.getIn(0).getHighTypeReadFacing(op))) {
       if (this.option_hide_exts && this.castStrategy!.isExtensionCastImplied(op, readOp))
         this.opHiddenFunc(op);
-      else if (this.glb.enhancedDisplay && this.isExtensionRedundant(op))
+      else if (this.glb.enhancedDisplay && this.isExtensionRedundant(op, readOp))
         this.opHiddenFunc(op);
       else
         this.opTypeCast(op);
@@ -1013,7 +1133,7 @@ export class PrintC extends PrintLanguage {
       this.opFunc(op);
   }
 
-  private isExtensionRedundant(op: PcodeOp): boolean {
+  private isExtensionRedundant(op: PcodeOp, readOp: PcodeOp | null): boolean {
     const inVn = op.getIn(0);
     const outVn = op.getOut();
     // If input already has the same size as output, extension is a no-op
@@ -1027,6 +1147,38 @@ export class PrintC extends PrintLanguage {
           const mask = maskVn.getOffset();
           if (mask <= calc_mask(outVn.getSize())) return true;
         }
+      }
+    }
+    // SEXT/ZEXT feeding into binary ops — C integer promotion
+    // Use readOp (the actual consumer at print time) if available, else fall back to loneDescend
+    const consumer = readOp ?? outVn.loneDescend();
+    if (consumer !== null && consumer !== undefined) {
+      const dcode = consumer.code();
+      // Array stride: INT_MULT with constant
+      if (dcode === OpCode.CPUI_INT_MULT) {
+        const strideVn = consumer.getIn(1);
+        if (strideVn.isConstant()) return true;
+      }
+      // Binary arithmetic/comparison where both sides are extended from same input size
+      const binaryOps = [
+        OpCode.CPUI_INT_ADD, OpCode.CPUI_INT_SUB, OpCode.CPUI_INT_MULT,
+        OpCode.CPUI_INT_DIV, OpCode.CPUI_INT_SDIV,
+        OpCode.CPUI_INT_EQUAL, OpCode.CPUI_INT_NOTEQUAL,
+        OpCode.CPUI_INT_SLESS, OpCode.CPUI_INT_SLESSEQUAL,
+        OpCode.CPUI_INT_LESS, OpCode.CPUI_INT_LESSEQUAL,
+      ];
+      if (binaryOps.includes(dcode)) {
+        const mySlot = (consumer.getIn(0) === outVn) ? 0 : 1;
+        const otherVn = consumer.getIn(1 - mySlot);
+        if (otherVn.isWritten()) {
+          const otherOp = otherVn.getDef()!;
+          const otherCode = otherOp.code();
+          if (otherCode === OpCode.CPUI_INT_SEXT || otherCode === OpCode.CPUI_INT_ZEXT) {
+            if (otherOp.getIn(0).getSize() === inVn.getSize()) return true;
+          }
+        }
+        // Other operand is already native size (no extension needed)
+        if (otherVn.getSize() === outVn.getSize() && !otherVn.isWritten()) return true;
       }
     }
     return false;
@@ -1459,8 +1611,12 @@ export class PrintC extends PrintLanguage {
     } else if (val <= 10n || (this.mods & modifiers.force_dec) !== 0) {
       displayFormat = 2; // force_dec
     } else {
-      if (this.glb.enhancedDisplay && PrintC.isBitmaskLike(val, sz)) {
+      if (this.glb.enhancedDisplay && print_negsign) {
+        displayFormat = 2; // decimal for negative signed values in enhanced mode
+      } else if (this.glb.enhancedDisplay && PrintC.isBitmaskLike(val, sz)) {
         displayFormat = 1; // hex for bitmask-like values
+      } else if (this.glb.enhancedDisplay && val <= 255n) {
+        displayFormat = 2; // decimal for small constants in enhanced mode
       } else {
         displayFormat = (PrintLanguage.mostNaturalBase(val) === 16) ? 1 : 2;
       }
@@ -1566,7 +1722,27 @@ export class PrintC extends PrintLanguage {
   opIntSlessEqual(op: PcodeOp): void { this.opBinary(PrintC.less_equal, op); }
   opIntLess(op: PcodeOp): void { this.opBinary(PrintC.less_than, op); }
   opIntLessEqual(op: PcodeOp): void { this.opBinary(PrintC.less_equal, op); }
-  opIntAdd(op: PcodeOp): void { this.opBinary(PrintC.binary_plus, op); }
+  opIntAdd(op: PcodeOp): void {
+    if (this.glb.enhancedDisplay) {
+      const in1 = op.getIn(1);
+      if (in1.isConstant()) {
+        const val = in1.getOffset();
+        const sz = in1.getSize();
+        const mask = calc_mask(sz);
+        const halfMax = (mask >> 1n) + 1n;
+        // Convert x + (-N) → x - N for negative constants (high bit set)
+        if (val >= halfMax && val !== halfMax) {
+          const negVal = ((~val) & mask) + 1n;
+          this.pushOp(PrintC.binary_minus, op);
+          // pushVn defers; push_integer (via pushAtom) triggers recurse processing in0 first
+          this.pushVn(op.getIn(0), op, this.mods);
+          this.push_integer(negVal, sz, false, tagtype.vartoken, in1, op);
+          return;
+        }
+      }
+    }
+    this.opBinary(PrintC.binary_plus, op);
+  }
   opIntSub(op: PcodeOp): void { this.opBinary(PrintC.binary_minus, op); }
   opIntCarry(op: PcodeOp): void { this.opFunc(op); }
   opIntScarry(op: PcodeOp): void { this.opFunc(op); }
@@ -1576,9 +1752,33 @@ export class PrintC extends PrintLanguage {
   opIntXor(op: PcodeOp): void { this.opBinary(PrintC.bitwise_xor, op); }
   opIntAnd(op: PcodeOp): void { this.opBinary(PrintC.bitwise_and, op); }
   opIntOr(op: PcodeOp): void { this.opBinary(PrintC.bitwise_or, op); }
-  opIntLeft(op: PcodeOp): void { this.opBinary(PrintC.shift_left, op); }
-  opIntRight(op: PcodeOp): void { this.opBinary(PrintC.shift_right, op); }
-  opIntSright(op: PcodeOp): void { this.opBinary(PrintC.shift_sright, op); }
+  opIntLeft(op: PcodeOp): void {
+    if (this.glb.enhancedDisplay) {
+      this.pushOp(PrintC.shift_left, op);
+      this.pushVn(op.getIn(1), op, this.mods | modifiers.force_dec);
+      this.pushVn(op.getIn(0), op, this.mods);
+    } else {
+      this.opBinary(PrintC.shift_left, op);
+    }
+  }
+  opIntRight(op: PcodeOp): void {
+    if (this.glb.enhancedDisplay) {
+      this.pushOp(PrintC.shift_right, op);
+      this.pushVn(op.getIn(1), op, this.mods | modifiers.force_dec);
+      this.pushVn(op.getIn(0), op, this.mods);
+    } else {
+      this.opBinary(PrintC.shift_right, op);
+    }
+  }
+  opIntSright(op: PcodeOp): void {
+    if (this.glb.enhancedDisplay) {
+      this.pushOp(PrintC.shift_sright, op);
+      this.pushVn(op.getIn(1), op, this.mods | modifiers.force_dec);
+      this.pushVn(op.getIn(0), op, this.mods);
+    } else {
+      this.opBinary(PrintC.shift_sright, op);
+    }
+  }
   opIntMult(op: PcodeOp): void { this.opBinary(PrintC.multiply, op); }
   opIntDiv(op: PcodeOp): void { this.opBinary(PrintC.divide, op); }
   opIntSdiv(op: PcodeOp): void { this.opBinary(PrintC.divide, op); }
@@ -1644,7 +1844,9 @@ export class PrintC extends PrintLanguage {
   }
 
   protected genericFunctionName(addr: Address): string {
-    return "func_" + addr.printRaw();
+    const raw = addr.printRaw();
+    // Strip "0x" prefix from hex address in identifiers for cleaner output
+    return "func_" + (this.glb.enhancedDisplay ? raw.replace(/^0x/, '') : raw);
   }
 
   protected genericTypeName(ct: Datatype): string {
@@ -2162,6 +2364,7 @@ export class PrintC extends PrintLanguage {
   protected emitExpression(op: PcodeOp): void {
     let outvn: Varnode = op.getOut();
     if (outvn !== null && outvn !== undefined) {
+      if (this.option_inplace_ops && this.emitIncDec(op)) return;
       if (this.option_inplace_ops && this.emitInplaceOp(op)) return;
       this.pushOp(PrintC.assignment, op);
       this.pushSymbolDetail(outvn, op, false);
@@ -2455,8 +2658,41 @@ export class PrintC extends PrintLanguage {
     }
   }
 
+  /**
+   * Detect x = x + 1 / x = x - 1 patterns and emit as ++x / --x.
+   * Only active in enhanced display mode. Must be called before emitInplaceOp.
+   */
+  protected emitIncDec(op: PcodeOp): boolean {
+    if (!this.glb.enhancedDisplay) return false;
+    const opc = op.code();
+    // PTRADD with index 1 is pointer increment (ptr = ptr + 1)
+    if (opc === OpCode.CPUI_PTRADD) {
+      const outvn = op.getOut();
+      const in0 = op.getIn(0);
+      if (outvn.getHigh() !== in0.getHigh()) return false;
+      const in1 = op.getIn(1);
+      if (!in1.isConstant() || in1.getOffset() !== 1n) return false;
+      this.pushOp(PrintC.pre_increment, op);
+      this.pushVnExplicit(in0, op);
+      this.recurse();
+      return true;
+    }
+    if (opc !== OpCode.CPUI_INT_ADD && opc !== OpCode.CPUI_INT_SUB) return false;
+    const outvn = op.getOut();
+    const in0 = op.getIn(0);
+    if (outvn.getHigh() !== in0.getHigh()) return false;
+    const in1 = op.getIn(1);
+    if (!in1.isConstant() || in1.getOffset() !== 1n) return false;
+    const tok = (opc === OpCode.CPUI_INT_ADD) ? PrintC.pre_increment : PrintC.pre_decrement;
+    this.pushOp(tok, op);
+    this.pushVnExplicit(in0, op);
+    this.recurse();
+    return true;
+  }
+
   protected emitInplaceOp(op: PcodeOp): boolean {
     let tok: OpToken;
+    let negateRhs = false;
     switch (op.code()) {
       case OpCode.CPUI_INT_MULT:
         tok = PrintC.multequal; break;
@@ -2467,7 +2703,21 @@ export class PrintC extends PrintLanguage {
       case OpCode.CPUI_INT_SREM:
         tok = PrintC.remequal; break;
       case OpCode.CPUI_INT_ADD:
-        tok = PrintC.plusequal; break;
+        tok = PrintC.plusequal;
+        // Enhanced: x += -N → x -= N
+        if (this.glb.enhancedDisplay) {
+          const addIn1 = op.getIn(1);
+          if (addIn1.isConstant()) {
+            const addVal = addIn1.getOffset();
+            const addMask = calc_mask(addIn1.getSize());
+            const addHalf = (addMask >> 1n) + 1n;
+            if (addVal >= addHalf && addVal !== addHalf) {
+              tok = PrintC.minusequal;
+              negateRhs = true;
+            }
+          }
+        }
+        break;
       case OpCode.CPUI_INT_SUB:
         tok = PrintC.minusequal; break;
       case OpCode.CPUI_INT_LEFT:
@@ -2481,6 +2731,8 @@ export class PrintC extends PrintLanguage {
         tok = PrintC.orequal; break;
       case OpCode.CPUI_INT_XOR:
         tok = PrintC.xorequal; break;
+      case OpCode.CPUI_PTRADD:
+        tok = PrintC.plusequal; break;
       default:
         return false;
     }
@@ -2488,7 +2740,14 @@ export class PrintC extends PrintLanguage {
     if (op.getOut().getHigh() !== vn.getHigh()) return false;
     this.pushOp(tok, op);
     this.pushVnExplicit(vn, op);
-    this.pushVn(op.getIn(1), op, this.mods);
+    if (negateRhs) {
+      const in1 = op.getIn(1);
+      const mask = calc_mask(in1.getSize());
+      const negVal = ((~in1.getOffset()) & mask) + 1n;
+      this.push_integer(negVal, in1.getSize(), false, tagtype.vartoken, in1, op);
+    } else {
+      this.pushVn(op.getIn(1), op, this.mods);
+    }
     this.recurse();
     return true;
   }
@@ -2562,7 +2821,8 @@ export class PrintC extends PrintLanguage {
     else
       lb = "code_";
     lb += addr.getShortcut();
-    lb += addr.printRaw();
+    const raw = addr.printRaw();
+    lb += this.glb.enhancedDisplay ? raw.replace(/^0x/, '') : raw;
     this.emit.tagLabel(lb, syntax_highlight.no_color, spc, off);
   }
 

@@ -182,7 +182,8 @@ describe('goto-to-if conversion', () => {
       const output = decompileXml(xmlFile, true);
       expect(output).toContain('testElseIf');
       // Enhanced mode should still have the goto (it's cross-scope, not convertible)
-      expect(output).toContain('goto code_r0x00100913');
+      // Enhanced mode strips "0x" from label addresses
+      expect(output).toContain('goto code_r00100913');
     });
 
     it('enhanced output should have balanced braces', () => {
@@ -447,4 +448,333 @@ describe('enhanced mode brace balance across ALL quality test opt levels', () =>
       expect(opens).toBe(closes);
     });
   }
+});
+
+// -----------------------------------------------------------------------
+// Phase 1 readability improvements: NULL, inplace ops, ++/--, signed negatives
+// -----------------------------------------------------------------------
+
+describe('enhanced display readability improvements', () => {
+  const CACHE_BASE = 'test/quality/results/.cache';
+
+  function findCachedXml(prefix: string): string | null {
+    if (!existsSync(CACHE_BASE)) return null;
+    const { readdirSync } = require('fs');
+    const dirs = readdirSync(CACHE_BASE) as string[];
+    const matching = dirs.filter((d: string) => d.startsWith(prefix)).sort();
+    if (matching.length === 0) return null;
+    const xmlPath = path.join(CACHE_BASE, matching[matching.length - 1], 'exported.xml');
+    return existsSync(xmlPath) ? xmlPath : null;
+  }
+
+  function getEnhancedOutput(xmlFile: string): string {
+    const writer = new StringWriter();
+    const tc = new FunctionTestCollection(writer);
+    tc.loadTest(xmlFile);
+    tc.applyEnhancedDisplay();
+    const failures: string[] = [];
+    tc.runTests(failures);
+    return tc.getLastOutput();
+  }
+
+  function getNormalOutput(xmlFile: string): string {
+    const writer = new StringWriter();
+    const tc = new FunctionTestCollection(writer);
+    tc.loadTest(xmlFile);
+    const failures: string[] = [];
+    tc.runTests(failures);
+    return tc.getLastOutput();
+  }
+
+  beforeAll(() => {
+    startDecompilerLibrary();
+  });
+
+  describe('NULL printing (Phase 1a)', () => {
+    const xmlFile = findCachedXml('06_linked_list_O0');
+
+    it('enhanced mode uses NULL for pointer-typed zero constants', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      expect(output).toContain('NULL');
+    });
+
+    it('non-enhanced mode does not use NULL', () => {
+      if (!xmlFile) return;
+      const output = getNormalOutput(xmlFile);
+      expect(output).not.toContain('NULL');
+    });
+
+    it('NULL replaces pointer-cast zero in comparisons and returns', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should have NULL in comparisons like == NULL or != NULL
+      const nullComparisons = (output.match(/[!=]=\s*NULL\b/g) || []).length;
+      expect(nullComparisons).toBeGreaterThan(0);
+    });
+  });
+
+  describe('inplace operators (Phase 1b)', () => {
+    const xmlFile = findCachedXml('06_linked_list_O0');
+
+    it('enhanced mode uses compound assignment operators', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should have at least one compound assignment
+      const compoundOps = (output.match(/\+=|-=|\*=|\/=|&=|\|=|>>=|<<=|\^=|%=/g) || []).length;
+      // Plus any ++ or -- operators
+      const incDec = (output.match(/\+\+|--/g) || []).length;
+      expect(compoundOps + incDec).toBeGreaterThan(0);
+    });
+
+    it('non-enhanced mode does not use compound assignment operators', () => {
+      if (!xmlFile) return;
+      const output = getNormalOutput(xmlFile);
+      // Non-enhanced should use plain assignment form (x = x + n)
+      const compoundOps = (output.match(/\+=|-=|\*=|\/=|&=|\|=|>>=|<<=|\^=|%=/g) || []).length;
+      const incDec = (output.match(/\+\+|--/g) || []).length;
+      expect(compoundOps + incDec).toBe(0);
+    });
+  });
+
+  describe('increment/decrement (Phase 1d)', () => {
+    const xmlFile = findCachedXml('06_linked_list_O0');
+
+    it('enhanced mode uses ++ for x = x + 1 patterns', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      const incs = (output.match(/\+\+/g) || []).length;
+      expect(incs).toBeGreaterThan(0);
+    });
+
+    it('++ replaces x = x + 1 patterns (not x += 1)', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should not have += 1 since those become ++
+      const plusEquals1 = (output.match(/\+=\s*1\s*;/g) || []).length;
+      expect(plusEquals1).toBe(0);
+    });
+  });
+
+  describe('signed negative display (Phase 1c)', () => {
+    const xmlFile = findCachedXml('08_string_ops_O0');
+
+    it('enhanced mode prints signed negative constants as decimal', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should have -1 for signed 0xffffffff values
+      const negatives = (output.match(/-\d+/g) || []).length;
+      expect(negatives).toBeGreaterThan(0);
+    });
+  });
+
+  describe('non-enhanced mode unchanged', () => {
+    const testPrefixes = [
+      '06_linked_list_O0',
+      '08_string_ops_O0',
+      '05_sorting_O0',
+    ];
+
+    for (const prefix of testPrefixes) {
+      const xmlFile = findCachedXml(prefix);
+
+      it(`${prefix}: non-enhanced output is deterministic`, () => {
+        if (!xmlFile) return;
+        const output1 = getNormalOutput(xmlFile);
+        const output2 = getNormalOutput(xmlFile);
+        expect(output1).toBe(output2);
+      });
+    }
+  });
+
+  describe('readability metrics across quality tests', () => {
+    const testPrefixes = [
+      '01_basic_control_O0',
+      '02_pointers_arrays_O0',
+      '04_bitwise_ops_O0',
+      '05_sorting_O0',
+      '06_linked_list_O0',
+      '08_string_ops_O0',
+    ];
+
+    it('enhanced mode has fewer raw hex zero constants than non-enhanced', () => {
+      let enhancedHexZeros = 0;
+      let normalHexZeros = 0;
+      let tested = 0;
+
+      for (const prefix of testPrefixes) {
+        const xmlFile = findCachedXml(prefix);
+        if (!xmlFile) continue;
+        tested++;
+
+        const enhanced = getEnhancedOutput(xmlFile);
+        const normal = getNormalOutput(xmlFile);
+
+        // Count (type *)0x0 patterns — these should be replaced by NULL
+        enhancedHexZeros += (enhanced.match(/\*\s*\)\s*0x0\b/g) || []).length;
+        normalHexZeros += (normal.match(/\*\s*\)\s*0x0\b/g) || []).length;
+      }
+
+      if (tested === 0) return;
+      expect(enhancedHexZeros).toBeLessThan(normalHexZeros);
+    });
+
+    it('enhanced mode has more compound/inc-dec operators than non-enhanced', () => {
+      let enhancedCompound = 0;
+      let normalCompound = 0;
+      let tested = 0;
+
+      for (const prefix of testPrefixes) {
+        const xmlFile = findCachedXml(prefix);
+        if (!xmlFile) continue;
+        tested++;
+
+        const enhanced = getEnhancedOutput(xmlFile);
+        const normal = getNormalOutput(xmlFile);
+
+        enhancedCompound += (enhanced.match(/\+=|-=|\*=|\/=|&=|\|=|>>=|<<=|\^=|%=|\+\+|--/g) || []).length;
+        normalCompound += (normal.match(/\+=|-=|\*=|\/=|&=|\|=|>>=|<<=|\^=|%=|\+\+|--/g) || []).length;
+      }
+
+      if (tested === 0) return;
+      expect(enhancedCompound).toBeGreaterThan(normalCompound);
+    });
+  });
+
+  describe('array subscript conversion (Phase 3a)', () => {
+    const xmlFile = findCachedXml('02_pointers_arrays_O0');
+
+    it('enhanced mode converts pointer arithmetic to array subscript', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should have array subscript syntax like )[index] from ((type *)base)[index]
+      expect(output).toMatch(/\)\s*\[/);
+    });
+
+    it('array_sum uses subscript instead of dereference+cast', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should contain ((i32 *)param_1)[xStack_14] pattern
+      expect(output).toMatch(/\(i32 \*\)param_1\)\[/);
+    });
+
+    it('non-enhanced mode uses dereference for pointer arithmetic', () => {
+      if (!xmlFile) return;
+      const normal = getNormalOutput(xmlFile);
+      // Non-enhanced should have the dereference form *(type *)(expr)
+      expect(normal).toMatch(/\*\(int4 \*\)/);
+    });
+  });
+
+  describe('negative constant display (Phase 3b)', () => {
+    const xmlFile = findCachedXml('08_string_ops_O0');
+
+    it('enhanced mode converts + -N to - N', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should have very few or no "+ -" patterns
+      const plusNeg = (output.match(/\+ -\d/g) || []).length;
+      expect(plusNeg).toBeLessThanOrEqual(1);
+    });
+
+    it('enhanced mode has subtraction where non-enhanced has addition of negatives', () => {
+      if (!xmlFile) return;
+      const enhanced = getEnhancedOutput(xmlFile);
+      const normal = getNormalOutput(xmlFile);
+      // Normal mode should have more "+ -" patterns than enhanced
+      const normalPlusNeg = (normal.match(/\+ -\d/g) || []).length;
+      const enhancedPlusNeg = (enhanced.match(/\+ -\d/g) || []).length;
+      if (normalPlusNeg > 0) {
+        expect(enhancedPlusNeg).toBeLessThan(normalPlusNeg);
+      }
+    });
+  });
+
+  describe('pointer PTRADD increment (Phase 3c)', () => {
+    const xmlFile = findCachedXml('08_string_ops_O0');
+
+    it('enhanced mode uses ++ for pointer increment patterns', () => {
+      if (!xmlFile) return;
+      const output = getEnhancedOutput(xmlFile);
+      // Should have ++pcStack patterns for pointer increments
+      const ptrIncs = (output.match(/\+\+\w*Stack/g) || []).length;
+      expect(ptrIncs).toBeGreaterThan(0);
+    });
+  });
+
+  describe('extension cast suppression (Phase 3d)', () => {
+    const xmlFile = findCachedXml('02_pointers_arrays_O0');
+
+    it('enhanced mode has fewer extension casts on array indices', () => {
+      if (!xmlFile) return;
+      const enhanced = getEnhancedOutput(xmlFile);
+      const normal = getNormalOutput(xmlFile);
+      // Enhanced should have fewer (i64) casts since SEXT/ZEXT feeding INT_MULT are suppressed
+      const enhancedExtCasts = (enhanced.match(/\((?:int8|long|i64)\)/g) || []).length;
+      const normalExtCasts = (normal.match(/\((?:int8|long|i64)\)/g) || []).length;
+      expect(enhancedExtCasts).toBeLessThanOrEqual(normalExtCasts);
+    });
+  });
+
+  describe('extension cast suppression in binary ops (Phase 4a)', () => {
+    // Use O1 binaries where comparisons with extended operands are common
+    const xmlFile = findCachedXml('13_array_algorithms_O1');
+
+    it('enhanced mode suppresses extension casts in binary arithmetic/comparison', () => {
+      if (!xmlFile) return;
+      const enhanced = getEnhancedOutput(xmlFile);
+      const normal = getNormalOutput(xmlFile);
+      // Enhanced should have fewer total extension casts (i64/u64/int8/uint8)
+      const enhancedCasts = (enhanced.match(/\((?:i64|u64)\)/g) || []).length;
+      const normalCasts = (normal.match(/\((?:int8|uint8)\)/g) || []).length;
+      expect(enhancedCasts).toBeLessThanOrEqual(normalCasts);
+    });
+
+    it('extension casts feeding phi-nodes are preserved', () => {
+      if (!xmlFile) return;
+      const enhanced = getEnhancedOutput(xmlFile);
+      // Some (u64) casts should remain for explicit assignments like uVar = (u64)x
+      const explicitCasts = (enhanced.match(/=\s*\(u64\)/g) || []).length;
+      expect(explicitCasts).toBeGreaterThan(0);
+    });
+  });
+
+  describe('shift decimal display (Phase 4b)', () => {
+    const xmlFile = findCachedXml('29_crypto_simple_O1');
+
+    it('shift amounts display as decimal in enhanced mode', () => {
+      if (!xmlFile) return;
+      const enhanced = getEnhancedOutput(xmlFile);
+      // All shift amounts should be decimal (no 0x prefix on shift RHS)
+      const hexShifts = (enhanced.match(/(?:>>|<<)\s*0x[0-9a-f]+/g) || []).length;
+      expect(hexShifts).toBe(0);
+    });
+
+    it('shift operations still present with decimal amounts', () => {
+      if (!xmlFile) return;
+      const enhanced = getEnhancedOutput(xmlFile);
+      // Should have shift operations with decimal amounts
+      const shifts = (enhanced.match(/(?:>>|<<)\s*\d/g) || []).length;
+      expect(shifts).toBeGreaterThan(0);
+    });
+  });
+
+  describe('small constant decimal display (Phase 4c)', () => {
+    it('non-bitmask small constants display as decimal', () => {
+      // isBitmaskLike returns true for powers of 2, contiguous bit runs, etc.
+      // Non-bitmask values ≤ 255 should be decimal in enhanced mode
+      expect(PrintC.isBitmaskLike(32n, 4)).toBe(true);   // 0x20 = power of 2
+      expect(PrintC.isBitmaskLike(48n, 4)).toBe(false);  // 0x30 = not bitmask
+      expect(PrintC.isBitmaskLike(100n, 4)).toBe(false);  // 0x64 = not bitmask
+      expect(PrintC.isBitmaskLike(255n, 1)).toBe(true);  // 0xFF = all-F mask
+      expect(PrintC.isBitmaskLike(127n, 4)).toBe(true);  // 0x7F = contiguous from bit 0
+    });
+
+    it('bitmask-like values stay hex in enhanced mode', () => {
+      // Powers of 2 and contiguous bit patterns should stay hex
+      expect(PrintC.isBitmaskLike(128n, 4)).toBe(true);  // 0x80
+      expect(PrintC.isBitmaskLike(64n, 4)).toBe(true);   // 0x40
+      expect(PrintC.isBitmaskLike(31n, 4)).toBe(true);   // 0x1F = contiguous from bit 0
+    });
+  });
 });
